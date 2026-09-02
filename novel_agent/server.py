@@ -51,11 +51,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(202,{'job':job,'created':created,'requestedCount':max(1,int(data.get('count',1))),'note':'每章人工确认后再次调用 continue 才会创建下一章'})
             if len(parts)==4 and parts[:3]==['api','chapters'] and parts[3]=='export':
                 ch=store.chapter(data['novelId'],int(data['chapterNumber']))
-                fmt=data.get('format','txt'); existing_path=config.data_dir/'exports'/f"{store.get_novel(data['novelId'])['id']}-{ch['number']}.{fmt}"
-                if ch and ch['status']=='EXPORTED' and existing_path.exists(): return self.send_json(200,{'path':str(existing_path),'status':'EXPORTED','idempotent':True})
+                fmt=data.get('format','txt'); export_job,created=store.create_export_job(ch,fmt) if ch else (None,False)
+                if export_job and not created and export_job['status']=='SUCCEEDED': return self.send_json(200,{'path':export_job['path'],'status':'EXPORTED','idempotent':True})
                 if not ch or not ch['review'].get('passed') or ch['status'] not in ('DRAFT_READY','WAITING_APPROVAL'):
                     raise ValueError('chapter_not_ready_for_export')
                 path=export_chapter(ch,store.get_novel(data['novelId']),fmt,config.data_dir/'exports');
+                store.complete_export_job(export_job,path)
                 store.record_export(data['novelId'],ch['number'])
                 return self.send_json(200,{'path':str(path),'status':'EXPORTED','idempotent':ch['status']=='EXPORTED'})
             if len(parts)==4 and parts[:3]==['api','chapters'] and parts[3] in ('manual-publish','publish'):

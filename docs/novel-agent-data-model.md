@@ -22,6 +22,8 @@
 | PublishJob | `chapter_id`, publisher, status, idempotency key, external id, attempts, error; 发布幂等唯一 |
 | GenerationUsage | `generation_job_id`, model, prompt version, input/output tokens, duration, request status |
 | PublishRecord | `chapter_id`, platform, optional external URL, published time, operator, notes; append-only manual confirmation audit |
+| ExportJob | `chapter_id`, format, status, persistent idempotency key, output path and error |
+| PublishJob | `chapter_id`, status, persistent idempotency key, platform, optional external URL and error; manual confirmation audit |
 
 ## 状态机
 

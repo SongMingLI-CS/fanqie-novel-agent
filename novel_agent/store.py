@@ -37,6 +37,8 @@ class Store:
         CREATE TABLE IF NOT EXISTS chapter_drafts (id TEXT PRIMARY KEY, chapter_id TEXT NOT NULL, version INTEGER NOT NULL, payload TEXT NOT NULL, raw_response TEXT DEFAULT '', proposed_state TEXT DEFAULT '{}', created_at TEXT NOT NULL, UNIQUE(chapter_id,version));
         CREATE TABLE IF NOT EXISTS review_results (id TEXT PRIMARY KEY, draft_id TEXT NOT NULL, payload TEXT NOT NULL, created_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS publish_records (id TEXT PRIMARY KEY, chapter_id TEXT NOT NULL, platform TEXT NOT NULL, external_url TEXT DEFAULT '', published_at TEXT NOT NULL, operator TEXT NOT NULL, notes TEXT DEFAULT '', created_at TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS export_jobs (id TEXT PRIMARY KEY, chapter_id TEXT NOT NULL, format TEXT NOT NULL, status TEXT NOT NULL, idempotency_key TEXT NOT NULL UNIQUE, path TEXT DEFAULT '', error TEXT DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS publish_jobs (id TEXT PRIMARY KEY, chapter_id TEXT NOT NULL, status TEXT NOT NULL, idempotency_key TEXT NOT NULL UNIQUE, platform TEXT DEFAULT '', external_url TEXT DEFAULT '', error TEXT DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
         """)
         self._ensure_column('chapters','beats',"TEXT DEFAULT '[]'")
         self.db.commit()
@@ -140,6 +142,20 @@ class Store:
     def usage(self,nid):
         return [dict(x) for x in self.db.execute("SELECT u.* FROM usage u JOIN jobs j ON j.id=u.job_id WHERE j.novel_id=? ORDER BY u.created_at DESC",(nid,)).fetchall()]
 
+    def export_job(self, chapter, fmt):
+        key=f"{chapter['id']}:{fmt}"; row=self.db.execute("SELECT * FROM export_jobs WHERE idempotency_key=?",(key,)).fetchone()
+        return dict(row) if row else None
+
+    def create_export_job(self, chapter, fmt):
+        existing=self.export_job(chapter,fmt)
+        if existing: return existing,False
+        ts=now(); row=(str(uuid.uuid4()),chapter['id'],fmt,'PENDING',f"{chapter['id']}:{fmt}",'','',ts,ts)
+        with self.tx(): self.db.execute("INSERT INTO export_jobs VALUES (?,?,?,?,?,?,?,?,?)",row)
+        return dict(self.db.execute("SELECT * FROM export_jobs WHERE id=?",(row[0],)).fetchone()),True
+
+    def complete_export_job(self, job, path):
+        with self.tx(): self.db.execute("UPDATE export_jobs SET status='SUCCEEDED',path=?,updated_at=? WHERE id=?",(str(path),now(),job['id']))
+
     def recent(self, nid, limit=3): return self.chapters(nid)[-limit:]
 
     def save_generation(self, job, output, raw, review, usage, proposed):
@@ -182,6 +198,7 @@ class Store:
             if not changed: raise ValueError("chapter_must_be_exported_before_manual_publish")
             ch=self.chapter(nid,number)
             self.db.execute("INSERT INTO publish_records VALUES (?,?,?,?,?,?,?,?)",(str(uuid.uuid4()),ch['id'],record['platform'],record.get('externalUrl',''),record.get('publishedAt',now()),record['operator'],record.get('notes',''),now()))
+            self.db.execute("INSERT INTO publish_jobs VALUES (?,?,?,?,?,?,?,?,?)",(str(uuid.uuid4()),ch['id'],'SUCCEEDED',f"{ch['id']}:{record['platform']}",record['platform'],record.get('externalUrl',''),' ',now(),now()))
             novel=self.get_novel(nid); bible=dict(novel['story_bible']); proposed=ch.get('proposed_state',{})
             bible['currentChapter']=number; bible['currentPosition']=proposed.get('currentPosition',bible.get('currentPosition',''))
             for key in ('events','eventsIntroduced'):
