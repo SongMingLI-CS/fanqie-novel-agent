@@ -21,7 +21,7 @@ class Handler(BaseHTTPRequestHandler):
             if p.startswith('/api/') and not authorize(self,config): return self.send_json(401,{'code':'unauthorized','message':'Authentication required','details':{}})
             if p=='/':
                 body=(ROOT/'static/index.html').read_bytes(); self.send_response(200); self.send_header('Content-Type','text/html; charset=utf-8'); self.send_header('Content-Length',str(len(body))); self.end_headers(); self.wfile.write(body); return
-            if p=='/api/novels': return self.send_json(200,[dict(x) for x in store.db.execute('SELECT * FROM novels ORDER BY updated_at DESC')])
+            if p=='/api/novels': return self.send_json(200,[store.get_novel(x['id']) for x in store.db.execute('SELECT id FROM novels ORDER BY updated_at DESC')])
             if len(parts)==3 and parts[:2]==['api','novels']:
                 novel=store.get_novel(parts[2]); return self.send_json(200,novel) if novel else self.send_json(404,{'code':'not_found','message':'Novel not found','details':{}})
             if len(parts)==4 and parts[:2]==['api','novels'] and parts[3]=='chapters':

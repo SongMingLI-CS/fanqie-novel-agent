@@ -92,7 +92,7 @@ class NovelTests(unittest.TestCase):
                 except Exception: time.sleep(.05)
             def call(url,data=None):
                 body=None if data is None else json.dumps(data).encode(); req=urllib.request.Request(url,body,{'Content-Type':'application/json'} if body else {}); return json.loads(urllib.request.urlopen(req,timeout=2).read())
-            novel=call('http://127.0.0.1:8787/api/novels',{'title':'HTTP测试'}); a=call(f"http://127.0.0.1:8787/api/novels/{novel['id']}/chapters/generate",{}); b=call(f"http://127.0.0.1:8787/api/novels/{novel['id']}/chapters/generate",{}); self.assertEqual(a['id'],b['id'])
+            novel=call('http://127.0.0.1:8787/api/novels',{'title':'HTTP测试','storyBible':{'mainline':'主线'}}); listed=call('http://127.0.0.1:8787/api/novels'); self.assertEqual(listed[0]['story_bible']['mainline'],'主线'); a=call(f"http://127.0.0.1:8787/api/novels/{novel['id']}/chapters/generate",{}); b=call(f"http://127.0.0.1:8787/api/novels/{novel['id']}/chapters/generate",{}); self.assertEqual(a['id'],b['id'])
         finally:
             proc.terminate(); proc.wait(timeout=3)
 
