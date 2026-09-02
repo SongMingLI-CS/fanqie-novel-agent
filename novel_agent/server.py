@@ -31,6 +31,8 @@ class Handler(BaseHTTPRequestHandler):
                 job=store.get_job(parts[2]); return self.send_json(200,job) if job else self.send_json(404,{'code':'not_found','message':'Job not found','details':{}})
             if len(parts)==4 and parts[:2]==['api','novels'] and parts[3]=='jobs': return self.send_json(200,store.jobs(parts[2]))
             if len(parts)==4 and parts[:2]==['api','novels'] and parts[3]=='usage': return self.send_json(200,store.usage(parts[2]))
+            if len(parts)==3 and parts[:2]==['api','chapters']:
+                chapter=store.chapter_by_id(parts[2]); return self.send_json(200,chapter) if chapter else self.send_json(404,{'code':'not_found','message':'Chapter not found','details':{}})
             return self.send_json(404,{'code':'not_found','message':'Route not found','details':{}})
         except Exception: return self.send_json(500,{'code':'internal_error','message':'Request failed','details':{}})
     def do_POST(self):
@@ -56,11 +58,13 @@ class Handler(BaseHTTPRequestHandler):
                 path=export_chapter(ch,store.get_novel(data['novelId']),fmt,config.data_dir/'exports');
                 store.record_export(data['novelId'],ch['number'])
                 return self.send_json(200,{'path':str(path),'status':'EXPORTED','idempotent':ch['status']=='EXPORTED'})
-            if len(parts)==4 and parts[:3]==['api','chapters'] and parts[3]=='manual-publish':
+            if len(parts)==4 and parts[:3]==['api','chapters'] and parts[3] in ('manual-publish','publish'):
                 if not str(data.get('platform','')).strip() or not str(data.get('operator','')).strip(): raise ValueError('platform_and_operator_required')
                 store.manual_publish(data['novelId'],int(data['chapterNumber']),data); return self.send_json(200,store.chapter(data['novelId'],int(data['chapterNumber'])))
             if len(parts)==4 and parts[:2]==['api','chapters'] and parts[3]=='review':
-                ch=store.chapter_by_id(parts[2]); result=__import__('novel_agent.reviewer',fromlist=['review']).review(ch,ch and store.get_novel(ch['novel_id'])['story_bible'],store.recent(ch['novel_id'])); store.db.execute("UPDATE chapters SET review=?,status=?,updated_at=? WHERE id=?",(json.dumps(result), 'WAITING_APPROVAL' if result['passed'] else 'FAILED',__import__('novel_agent.store',fromlist=['now']).now(),parts[2])); store.db.commit(); return self.send_json(200,result)
+                ch=store.chapter_by_id(parts[2])
+                if not ch: return self.send_json(404,{'code':'not_found','message':'Chapter not found','details':{}})
+                result=__import__('novel_agent.reviewer',fromlist=['review']).review(ch,store.get_novel(ch['novel_id'])['story_bible'],store.recent(ch['novel_id'])); store.db.execute("UPDATE chapters SET review=?,status=?,updated_at=? WHERE id=?",(json.dumps(result), 'WAITING_APPROVAL' if result['passed'] else 'FAILED',__import__('novel_agent.store',fromlist=['now']).now(),parts[2])); store.db.commit(); return self.send_json(200,result)
             if len(parts)==4 and parts[:2]==['api','chapters'] and parts[3]=='approve':
                 ch=store.chapter_by_id(parts[2]);
                 if not ch or ch['review'].get('blockingIssues'): raise ValueError('chapter cannot be approved')

@@ -66,6 +66,7 @@
 - 章节结构现在独立保存 `summary` 与 `beats`，部署/备份/恢复说明见 `docs/novel-agent-deployment.md`。
 - 新增追加式 `chapter_drafts`、`review_results`、`publish_records`，并提供小说级用量查询，保留编辑和人工发布历史。
 - Reviewer 现在阻断非对象响应、未授权世界规则、时间线事件重定义和未开放伏笔回收；过期运行任务可在 Worker 重启后被重新领取。
+- API 增加章节详情、`/publish` 人工确认兼容路由和小说级用量查询；所有未知 API 路由/资源返回结构化 404。
 
 追加验证：
 
