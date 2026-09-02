@@ -6,6 +6,8 @@
 - `LocalFilePublisher`：将已批准章节写入配置目录，使用原子临时文件与稳定命名，供人工上传。
 - `ExternalPublisher`：仅保留未来由正式平台 API 实现的接口；当前版本不调用它，不使用浏览器点击、登录、验证码或平台自动化。
 
+代码中的 `publishers.py` 提供 `DryRunPublisher`、`LocalFilePublisher` 和 `ExternalPublisher` 契约。前两者只产生 dry-run 结果或本地文件；`ExternalPublisher` 没有默认实现，避免误接入外部平台。
+
 ## 发布前门禁
 
 服务端必须确认：任务为 `DRAFT_READY` 或 `WAITING_APPROVAL`；审查无阻断问题；章节内容完整；章节尚未导出；导出幂等键未成功使用；审核策略允许。`NOVEL_PUBLISH_ENABLED` 保持默认 `false`，本版本只允许导出和人工确认，不允许自动发布。
