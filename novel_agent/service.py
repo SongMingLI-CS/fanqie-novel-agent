@@ -1,6 +1,6 @@
 import json
 from pathlib import Path
-from .deepseek import DeepSeekError, parse_output
+from .deepseek import DeepSeekError, parse_output, response_summary, validate_chapter_output
 from .reviewer import review
 
 
@@ -31,18 +31,22 @@ class NovelService:
         system='You are a structured novel writer. Follow the supplied project skill and Story Bible. Return only valid JSON.'
         prompt=json.dumps({'skill':skill,'storyBible':bible,'recentChapterSummaries':[x.get('summary','') for x in recent],'chapterNumber':job['chapter_number'],'request':'Plan beats and write the next chapter. Include a concise summary field. Respect all facts; do not invent unauthorized key settings.'},ensure_ascii=False)
         self.store.set_status(job['novel_id'],job['chapter_number'],'GENERATING')
-        json_failure=False
+        json_failure=False; first_failure=''
         try:
             raw,usage=self.client.complete(system,prompt)
-            try: output=parse_output(raw)
+            try:
+                output=validate_chapter_output(parse_output(raw),job['chapter_number'])
             except DeepSeekError:
                 # One bounded repair/retry, never publish partial text.
-                json_failure=True
-                raw,usage=self.client.complete(system,prompt+'\nThe previous response was invalid JSON. Return the same chapter as one valid JSON object.')
-                output=parse_output(raw)
+                json_failure=True; first_failure=response_summary(raw)
+                repair_prompt=prompt+'\n上一次响应无法解析或不符合字段契约。请修复后只返回一个完整、合法的 JSON 对象，不要 Markdown 代码块、解释文字或前后缀；正文必须完整放在 content 字符串中，正确转义引号、换行和 Unicode。'
+                raw,usage=self.client.complete(system,repair_prompt)
+                output=validate_chapter_output(parse_output(raw),job['chapter_number'])
         except DeepSeekError as exc:
-            self.store.record_usage(job,self.config.model,'novel-writer@1','failed',str(exc))
-            self.store.fail_job(job,str(exc),0 if json_failure else self.config.max_job_attempts); return False
+            detail=str(exc)
+            if json_failure: detail += '; first_response_summary='+first_failure
+            self.store.record_usage(job,self.config.model,'novel-writer@1','failed',detail)
+            self.store.fail_job(job,detail,0 if json_failure else self.config.max_job_attempts); return False
         self.store.set_status(job['novel_id'],job['chapter_number'],'REVIEWING'); rules=bible.get('styleRules',{}) if isinstance(bible,dict) else {}; target=rules.get('chapterLength',0) if isinstance(rules,dict) else 0; result=review(output,bible,recent,target if isinstance(target,int) else 0)
         proposed={'currentChapter':job['chapter_number'],'stateChanges':output.get('stateChanges',[]),'events':output.get('eventsIntroduced',[]),'foreshadowingResolved':output.get('foreshadowingResolved',[])}
         self.store.save_generation(job,output,raw,result,usage,proposed); return result['passed']

@@ -5,11 +5,19 @@ from novel_agent.exporters import export_chapter
 from novel_agent.reviewer import review
 from novel_agent.service import NovelService
 from novel_agent.config import Config
-from novel_agent.deepseek import DeepSeekClient
+from novel_agent.deepseek import DeepSeekClient, parse_output, validate_chapter_output
 
 class FakeClient:
     def __init__(self,text): self.text=text
     def complete(self,*args): return self.text, {'model':'test-r1','prompt_version':'novel-writer@1','input_tokens':1,'output_tokens':2,'duration_ms':1,'request_status':'succeeded'}
+
+def chapter_json(content='第一段。\n\n他说：“继续。”'):
+    return json.dumps({'chapterNumber':1,'title':'开端','chapterGoal':'找到线索','summary':'发现线索','beats':[{'goal':'调查'}],'content':content,'charactersUsed':[],'eventsIntroduced':[],'foreshadowingAdded':[],'foreshadowingResolved':[],'stateChanges':[],'nextChapterHook':'门开了','warnings':[]},ensure_ascii=False)
+
+class SequenceClient(FakeClient):
+    def __init__(self, texts): self.texts=list(texts); self.calls=[]
+    def complete(self, system, user):
+        self.calls.append(user); text=self.texts.pop(0); return text, {'model':'test-r1','prompt_version':'novel-writer@1','input_tokens':1,'output_tokens':2,'duration_ms':1,'request_status':'succeeded'}
 
 class NovelTests(unittest.TestCase):
     def setUp(self): self.tmp=tempfile.TemporaryDirectory(); self.store=Store(Path(self.tmp.name)/'db.sqlite3'); self.novel=self.store.create_novel('测试小说',{'characters':[{'name':'林默'}],'worldRules':[{'key':'magic','description':'规则'}],'timeline':[{'key':'e1','description':'事件'}],'foreshadowing':[{'key':'f1','status':'OPEN'}],'forbiddenContent':['SECRET']})
@@ -19,7 +27,7 @@ class NovelTests(unittest.TestCase):
         self.assertEqual(self.store.db.execute('SELECT COUNT(*) FROM characters WHERE novel_id=?',(self.novel['id'],)).fetchone()[0],1)
         self.assertEqual(self.store.db.execute('SELECT COUNT(*) FROM foreshadowing WHERE novel_id=?',(self.novel['id'],)).fetchone()[0],1)
     def test_generation_history_is_append_only(self):
-        raw=json.dumps({'title':'一','chapterGoal':'g','content':'一。\n二。','summary':'s','beats':[]})
+        raw=chapter_json('一。\n\n二。')
         job,_=self.store.create_job(self.novel['id'],1); service=NovelService(self.store,FakeClient(raw),Config(data_dir=Path(self.tmp.name)),Path(__file__).parents[1]); service.process(job); chapter=self.store.chapter(self.novel['id'],1); self.store.update_draft(chapter['id'],{'content':'编辑后'}); self.assertEqual(self.store.db.execute('SELECT COUNT(*) FROM chapter_drafts WHERE chapter_id=?',(chapter['id'],)).fetchone()[0],2)
     def test_prompt_bible_is_bounded(self):
         compact=NovelService.compact_bible({'mainline':'x'*100000,'characters':[{'name':str(i)} for i in range(1000)]})
@@ -65,6 +73,33 @@ class NovelTests(unittest.TestCase):
         job,_=self.store.create_job(self.novel['id'],1); service=NovelService(self.store,FakeClient(raw),Config(data_dir=Path(self.tmp.name)),Path(__file__).parents[1]); self.assertTrue(service.process(job)); chapter=self.store.chapter(self.novel['id'],1); self.assertEqual(chapter['status'],'WAITING_APPROVAL'); self.assertEqual(chapter['summary'],'林默发现线索'); self.assertEqual(chapter['beats'][0]['goal'],'调查'); self.assertEqual(self.store.get_novel(self.novel['id'])['current_chapter'],0)
     def test_invalid_model_response_fails(self):
         job,_=self.store.create_job(self.novel['id'],1); service=NovelService(self.store,FakeClient('not json'),Config(data_dir=Path(self.tmp.name)),Path(__file__).parents[1]); self.assertFalse(service.process(job)); self.assertEqual(self.store.chapter(self.novel['id'],1)['status'],'FAILED'); self.assertEqual(self.store.usage(self.novel['id'])[0]['request_status'],'failed')
+
+    def test_json_parser_handles_fence_prefix_and_unicode_text(self):
+        value=parse_output('说明文字\n```json\n'+chapter_json()+'\n```\n结束')
+        self.assertEqual(value['content'],'第一段。\n\n他说：“继续。”')
+        self.assertEqual(validate_chapter_output(value,1)['chapterNumber'],1)
+
+    def test_reasoning_content_is_ignored(self):
+        class Response:
+            def __enter__(self): return self
+            def __exit__(self,*args): pass
+            def read(self): return json.dumps({'choices':[{'message':{'reasoning_content':'not json','content':'answer'}}]}).encode()
+        old=os.environ.get('DEEPSEEK_API_KEY'); os.environ['DEEPSEEK_API_KEY']='test-only'
+        try:
+            text,_=DeepSeekClient(Config(max_retries=0,base_url='https://test.invalid'),lambda *a,**k: Response()).complete('s','u'); self.assertEqual(text,'answer')
+        finally:
+            if old is None: os.environ.pop('DEEPSEEK_API_KEY',None)
+            else: os.environ['DEEPSEEK_API_KEY']=old
+
+    def test_invalid_json_retries_same_job_and_succeeds(self):
+        client=SequenceClient(['说明\n{截断',chapter_json()]); job,_=self.store.create_job(self.novel['id'],1)
+        self.assertTrue(NovelService(self.store,client,Config(data_dir=Path(self.tmp.name)),Path(__file__).parents[1]).process(job))
+        self.assertEqual(len(client.calls),2); self.assertEqual(self.store.get_job(job['id'])['status'],'SUCCEEDED'); self.assertEqual(self.store.chapter(self.novel['id'],1)['status'],'WAITING_APPROVAL')
+
+    def test_two_invalid_json_responses_fail_without_story_bible_change(self):
+        client=SequenceClient(['前缀 {截断','仍然不是 JSON']); job,_=self.store.create_job(self.novel['id'],1); before=self.store.get_novel(self.novel['id'])
+        self.assertFalse(NovelService(self.store,client,Config(data_dir=Path(self.tmp.name)),Path(__file__).parents[1]).process(job))
+        self.assertEqual(len(client.calls),2); self.assertEqual(self.store.get_job(job['id'])['status'],'FAILED'); self.assertEqual(self.store.get_novel(self.novel['id'])['story_bible_version'],before['story_bible_version']); self.assertEqual(self.store.chapter(self.novel['id'],1)['content'],''); self.assertIn('first_response_summary=',self.store.usage(self.novel['id'])[0]['error'])
     def test_deepseek_timeout_retries(self):
         class Response:
             def __enter__(self): return self
