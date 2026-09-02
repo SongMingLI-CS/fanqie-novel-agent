@@ -142,6 +142,13 @@ class Store:
     def get_job(self,jid):
         row=self.db.execute("SELECT * FROM jobs WHERE id=?",(jid,)).fetchone(); return dict(row) if row else None
     def cancel_job(self,jid): self.db.execute("UPDATE jobs SET status='CANCELLED',updated_at=? WHERE id=? AND status IN ('PENDING','RUNNING')",(now(),jid)); self.db.commit()
+    def fail_job(self, job, error, max_attempts=3):
+        current=self.get_job(job['id']) or job
+        retry=current['attempts'] < max_attempts; status='PENDING' if retry else 'FAILED'; chapter_status='PENDING' if retry else 'FAILED'
+        with self.tx():
+            self.db.execute("UPDATE jobs SET status=?,error=?,locked_until=NULL,updated_at=? WHERE id=?",(status,error,now(),job['id']))
+            self.db.execute("UPDATE chapters SET status=?,updated_at=? WHERE novel_id=? AND number=?",(chapter_status,now(),job['novel_id'],job['chapter_number']))
+        return retry
     def set_paused(self,nid,paused): self.db.execute("UPDATE novels SET paused=?,updated_at=? WHERE id=?",(int(paused),now(),nid)); self.db.commit()
     def record_export(self,nid,number): self.set_status(nid,number,ChapterStatus.EXPORTED); self.db.execute("UPDATE chapters SET exported_at=? WHERE novel_id=? AND number=?",(now(),nid,number)); self.db.commit()
     def update_draft(self,cid,changes):

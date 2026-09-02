@@ -22,6 +22,8 @@ class NovelTests(unittest.TestCase):
         a,created=self.store.create_job(self.novel['id'],1); b,created2=self.store.create_job(self.novel['id'],1); self.assertTrue(created); self.assertFalse(created2); self.assertEqual(a['id'],b['id'])
     def test_failed_job_can_resume(self):
         a,_=self.store.create_job(self.novel['id'],1); self.store.db.execute("UPDATE jobs SET status='FAILED' WHERE id=?",(a['id'],)); self.store.db.commit(); b,created=self.store.create_job(self.novel['id'],1); self.assertTrue(created); self.assertEqual(a['id'],b['id']); self.assertEqual(b['status'],'PENDING')
+    def test_job_failure_retries_then_dead_letters(self):
+        job,_=self.store.create_job(self.novel['id'],1); self.store.db.execute("UPDATE jobs SET attempts=1,status='RUNNING' WHERE id=?",(job['id'],)); self.store.db.commit(); self.assertTrue(self.store.fail_job(job,'temporary',3)); self.assertEqual(self.store.get_job(job['id'])['status'],'PENDING'); job=self.store.get_job(job['id']); self.store.db.execute("UPDATE jobs SET attempts=3,status='RUNNING' WHERE id=?",(job['id'],)); self.store.db.commit(); self.assertFalse(self.store.fail_job(job,'permanent',3)); self.assertEqual(self.store.get_job(job['id'])['status'],'FAILED')
     def test_paused_novel_rejects_new_job(self):
         self.store.set_paused(self.novel['id'],True)
         with self.assertRaises(ValueError): self.store.create_job(self.novel['id'],1)

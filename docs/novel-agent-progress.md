@@ -61,8 +61,10 @@
 - 重复导出返回既有文件和 `idempotent=true`；无效状态不会覆盖已有稿件。
 - 暂停小说拒绝新生成任务；`continue` 只创建当前下一章，连续 N 章也必须逐章人工确认后继续。
 - 修改草稿会清空旧审查结果并回到 `REVIEWING`，必须重新审查后才能导出。
+- Worker 对网络/服务错误按最大次数重试并进入 `FAILED`；非法 JSON 的修复重试失败会直接进入死信，不重复发布。
+- 控制台已增加 StoryBible 编辑、草稿修改、重新审查、导出和人工发布确认操作。
 
 追加验证：
 
-- `make lint && make typecheck && make test && make build`：13/13 测试通过。
+- `make lint && make typecheck && make test && make build`：14/14 测试通过。
 - HTTP 冒烟：`GET /` 与 `POST /api/novels` 通过；过程创建的临时 SQLite 已移出仓库。

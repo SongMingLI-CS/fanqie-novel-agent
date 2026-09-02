@@ -18,15 +18,17 @@ class NovelService:
         system='You are a structured novel writer. Follow the supplied project skill and Story Bible. Return only valid JSON.'
         prompt=json.dumps({'skill':skill,'storyBible':bible,'recentChapterSummaries':[x.get('summary','') for x in recent],'chapterNumber':job['chapter_number'],'request':'Plan beats and write the next chapter. Respect all facts; do not invent unauthorized key settings.'},ensure_ascii=False)
         self.store.set_status(job['novel_id'],job['chapter_number'],'GENERATING')
+        json_failure=False
         try:
             raw,usage=self.client.complete(system,prompt)
             try: output=parse_output(raw)
             except DeepSeekError:
                 # One bounded repair/retry, never publish partial text.
+                json_failure=True
                 raw,usage=self.client.complete(system,prompt+'\nThe previous response was invalid JSON. Return the same chapter as one valid JSON object.')
                 output=parse_output(raw)
         except DeepSeekError as exc:
-            self.store.set_status(job['novel_id'],job['chapter_number'],'FAILED'); self.store.db.execute("UPDATE jobs SET status='FAILED',error=? WHERE id=?",(str(exc),job['id'])); self.store.db.commit(); return False
+            self.store.fail_job(job,str(exc),0 if json_failure else self.config.max_job_attempts); return False
         self.store.set_status(job['novel_id'],job['chapter_number'],'REVIEWING'); result=review(output,bible,recent)
         proposed={'currentChapter':job['chapter_number'],'stateChanges':output.get('stateChanges',[]),'events':output.get('eventsIntroduced',[]),'foreshadowingResolved':output.get('foreshadowingResolved',[])}
         self.store.save_generation(job,output,raw,result,usage,proposed); return result['passed']
