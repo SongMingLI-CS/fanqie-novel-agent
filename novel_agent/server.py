@@ -42,9 +42,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(202,jobs)
             if len(parts)==4 and parts[:3]==['api','chapters'] and parts[3]=='export':
                 ch=store.chapter(data['novelId'],int(data['chapterNumber']))
-                if ch['review'].get('blockingIssues'): raise ValueError('blockingIssues prevent export')
-                path=export_chapter(ch,store.get_novel(data['novelId']),data.get('format','txt'),config.data_dir/'exports');
-                if ch['status']!='EXPORTED': store.record_export(data['novelId'],ch['number'])
+                fmt=data.get('format','txt'); existing_path=config.data_dir/'exports'/f"{store.get_novel(data['novelId'])['id']}-{ch['number']}.{fmt}"
+                if ch and ch['status']=='EXPORTED' and existing_path.exists(): return self.send_json(200,{'path':str(existing_path),'status':'EXPORTED','idempotent':True})
+                if not ch or not ch['review'].get('passed') or ch['status'] not in ('DRAFT_READY','WAITING_APPROVAL'):
+                    raise ValueError('chapter_not_ready_for_export')
+                path=export_chapter(ch,store.get_novel(data['novelId']),fmt,config.data_dir/'exports');
+                store.record_export(data['novelId'],ch['number'])
                 return self.send_json(200,{'path':str(path),'status':'EXPORTED','idempotent':ch['status']=='EXPORTED'})
             if len(parts)==4 and parts[:3]==['api','chapters'] and parts[3]=='manual-publish': store.manual_publish(data['novelId'],int(data['chapterNumber']),data); return self.send_json(200,store.chapter(data['novelId'],int(data['chapterNumber'])))
             if len(parts)==4 and parts[:2]==['api','chapters'] and parts[3]=='review':

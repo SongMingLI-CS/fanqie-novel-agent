@@ -54,7 +54,13 @@
 - 当前 Worker 是单进程单并发；租约、超时恢复和 `NOVEL_JOB_TIMEOUT` 已实现，横向多实例和更高并发仍需生产数据库/队列增强。
 - 控制台已覆盖小说、章节、生成和暂停/继续的最小操作；富文本编辑、逐字段 StoryBible 编辑和更完整的审核视图仍是后续增强项。
 
+状态门禁修正：
+
+- 导出现在同时要求 `ReviewResult.passed=true`、无 `blockingIssues` 且章节处于 `DRAFT_READY/WAITING_APPROVAL`。
+- 人工发布现在严格要求先有 `EXPORTED` 状态，并在确认事务中推进 `current_chapter`。
+- 重复导出返回既有文件和 `idempotent=true`；无效状态不会覆盖已有稿件。
+
 追加验证：
 
-- `make lint && make typecheck && make test && make build`：10/10 测试通过。
+- `make lint && make typecheck && make test && make build`：11/11 测试通过。
 - HTTP 冒烟：`GET /` 与 `POST /api/novels` 通过；过程创建的临时 SQLite 已移出仓库。

@@ -3,7 +3,7 @@ from pathlib import Path
 
 
 def export_chapter(chapter, novel, fmt, directory):
-    if chapter['review'].get('blockingIssues'): raise ValueError('blockingIssues prevent export')
+    if not chapter['review'].get('passed') or chapter['review'].get('blockingIssues'): raise ValueError('chapter review prevents export')
     if fmt not in ('txt','md','json'): raise ValueError('unsupported export format')
     directory=Path(directory); directory.mkdir(parents=True,exist_ok=True)
     meta={'novel':novel['title'],'volume':novel.get('volume',''),'chapterNumber':chapter['number'],'title':chapter['title'],'content':chapter['content'],'summary':chapter['summary'],'characters':chapter['characters'],'events':chapter['events'],'foreshadowingAdded':chapter['foreshadowing_added'],'foreshadowingResolved':chapter['foreshadowing_resolved'],'review':chapter['review'],'model':chapter['model'],'generatedAt':chapter['generated_at'],'storyBibleVersion':novel['story_bible_version']}

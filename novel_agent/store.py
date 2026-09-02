@@ -65,6 +65,8 @@ class Store:
         return version
 
     def create_job(self, nid, number, kind="generate"):
+        if not self.get_novel(nid): raise ValueError("novel_not_found")
+        if number < 1: raise ValueError("chapter_number_must_be_positive")
         key = f"{nid}:{number}:{kind}"
         existing = self.db.execute("SELECT * FROM jobs WHERE idempotency_key=?", (key,)).fetchone()
         if existing and existing["status"] not in ("FAILED", "CANCELLED"): return dict(existing), False
@@ -120,5 +122,6 @@ class Store:
     def record_export(self,nid,number): self.set_status(nid,number,ChapterStatus.EXPORTED); self.db.execute("UPDATE chapters SET exported_at=? WHERE novel_id=? AND number=?",(now(),nid,number)); self.db.commit()
     def manual_publish(self,nid,number,record):
         with self.tx():
-            self.db.execute("UPDATE chapters SET status=?,publish_record=?,published_at=?,updated_at=? WHERE novel_id=? AND number=? AND status IN ('EXPORTED','WAITING_APPROVAL')",(ChapterStatus.PUBLISHED_MANUALLY,dumps(record),record.get("publishedAt",now()),now(),nid,number))
+            changed=self.db.execute("UPDATE chapters SET status=?,publish_record=?,published_at=?,updated_at=? WHERE novel_id=? AND number=? AND status='EXPORTED'",(ChapterStatus.PUBLISHED_MANUALLY,dumps(record),record.get("publishedAt",now()),now(),nid,number)).rowcount
+            if not changed: raise ValueError("chapter_must_be_exported_before_manual_publish")
             self.db.execute("UPDATE novels SET current_chapter=MAX(current_chapter,?),updated_at=? WHERE id=?",(number,now(),nid))

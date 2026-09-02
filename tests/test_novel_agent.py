@@ -28,7 +28,11 @@ class NovelTests(unittest.TestCase):
         for fmt in ('txt','md','json'):
             p=export_chapter(ch,self.novel,fmt,Path(self.tmp.name)); self.assertTrue(p.exists()); self.assertIn('正文',p.read_text())
     def test_manual_publish(self):
-        self.store.create_job(self.novel['id'],1); self.store.db.execute("UPDATE chapters SET status='EXPORTED' WHERE novel_id=?",(self.novel['id'],)); self.store.db.commit(); self.store.manual_publish(self.novel['id'],1,{'platform':'Fanqie','operator':'u'}); self.assertEqual(self.store.chapter(self.novel['id'],1)['status'],'PUBLISHED_MANUALLY')
+        self.store.create_job(self.novel['id'],1)
+        with self.assertRaises(ValueError): self.store.manual_publish(self.novel['id'],1,{'platform':'Fanqie','operator':'u'})
+        self.store.db.execute("UPDATE chapters SET status='EXPORTED' WHERE novel_id=?",(self.novel['id'],)); self.store.db.commit(); self.store.manual_publish(self.novel['id'],1,{'platform':'Fanqie','operator':'u'}); self.assertEqual(self.store.chapter(self.novel['id'],1)['status'],'PUBLISHED_MANUALLY'); self.assertEqual(self.store.get_novel(self.novel['id'])['current_chapter'],1)
+    def test_review_without_pass_cannot_export(self):
+        result=review({'title':'x','chapterGoal':'g','content':'正文'},self.novel['story_bible'],[],target_words=1000); self.assertFalse(result['passed']); self.assertFalse(result['blockingIssues'])
     def test_generation_structured_response(self):
         raw=json.dumps({'chapterNumber':1,'title':'开端','chapterGoal':'找到线索','content':'第一段。\n\n第二段。','charactersUsed':[],'eventsIntroduced':[],'foreshadowingAdded':[],'foreshadowingResolved':[],'stateChanges':[],'nextChapterHook':'门开了','warnings':[]})
         job,_=self.store.create_job(self.novel['id'],1); service=NovelService(self.store,FakeClient(raw),Config(data_dir=Path(self.tmp.name)),Path(__file__).parents[1]); self.assertTrue(service.process(job)); self.assertEqual(self.store.chapter(self.novel['id'],1)['status'],'WAITING_APPROVAL'); self.assertEqual(self.store.get_novel(self.novel['id'])['current_chapter'],0)
