@@ -116,6 +116,24 @@ class NovelTests(unittest.TestCase):
         finally:
             if old is None: os.environ.pop('DEEPSEEK_API_KEY',None)
             else: os.environ['DEEPSEEK_API_KEY']=old
+
+    def test_deepseek_uses_stream_and_separate_timeout_settings(self):
+        class Response:
+            status=200
+            def __enter__(self): return self
+            def __exit__(self,*args): pass
+            def read(self): return b'data: {"choices":[{"delta":{"content":"{\\"chapterNumber\\":1"}}]}\n\ndata: {"choices":[{"delta":{"content":"}"}}],"usage":{"prompt_tokens":5,"completion_tokens":6}}\n\ndata: [DONE]\n'
+        calls=[]
+        def opener(request,timeout,context):
+            calls.append((json.loads(request.data),timeout)); return Response()
+        old=os.environ.get('DEEPSEEK_API_KEY'); os.environ['DEEPSEEK_API_KEY']='test-only'
+        try:
+            config=Config(max_retries=0,timeout=180,connect_timeout=10,base_url='https://test.invalid')
+            text,usage=DeepSeekClient(config,opener).complete('s','u')
+            self.assertEqual(json.loads(text)['chapterNumber'],1); self.assertEqual(calls[0][0]['stream'],True); self.assertEqual(calls[0][0]['response_format'],{'type':'json_object'}); self.assertEqual(calls[0][1],180); self.assertEqual(usage['output_tokens'],6)
+        finally:
+            if old is None: os.environ.pop('DEEPSEEK_API_KEY',None)
+            else: os.environ['DEEPSEEK_API_KEY']=old
     def test_deepseek_requires_injected_base_url(self):
         old=os.environ.get('DEEPSEEK_API_KEY'); os.environ['DEEPSEEK_API_KEY']='test-only'
         try:

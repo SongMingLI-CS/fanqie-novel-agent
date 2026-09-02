@@ -10,8 +10,9 @@ class Config:
     ca_bundle: str = os.getenv("DEEPSEEK_CA_BUNDLE", "")
     model: str = os.getenv("DEEPSEEK_MODEL", "deepseek-reasoner")
     max_tokens: int = int(os.getenv("NOVEL_MAX_CHAPTER_TOKENS", "6000"))
-    max_retries: int = int(os.getenv("NOVEL_MAX_RETRIES", "3"))
-    timeout: int = int(os.getenv("NOVEL_REQUEST_TIMEOUT", "90"))
+    max_retries: int = min(2, int(os.getenv("NOVEL_MAX_RETRIES", "2")))
+    connect_timeout: int = int(os.getenv("DEEPSEEK_CONNECT_TIMEOUT", "10"))
+    timeout: int = max(180, int(os.getenv("NOVEL_REQUEST_TIMEOUT", "180")))
     job_timeout: int = int(os.getenv("NOVEL_JOB_TIMEOUT", "900"))
     worker_once: bool = os.getenv("NOVEL_WORKER_ONCE", "false").lower() == "true"
     worker_concurrency: int = max(1, int(os.getenv("NOVEL_WORKER_CONCURRENCY", "1")))
