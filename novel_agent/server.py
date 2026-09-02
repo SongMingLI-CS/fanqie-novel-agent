@@ -66,6 +66,8 @@ class Handler(BaseHTTPRequestHandler):
             if p.startswith('/api/') and not authorize(self,config): return self.send_json(401,{'code':'unauthorized','message':'Authentication required','details':{}})
             if len(parts)==4 and parts[:2]==['api','novels'] and parts[3]=='story-bible':
                 version=store.update_bible(parts[2],data.get('storyBible',data)); return self.send_json(200,{'version':version,'novel':store.get_novel(parts[2])})
+            if len(parts)==3 and parts[:2]==['api','chapters']:
+                return self.send_json(200,store.update_draft(parts[2],data))
             return self.send_json(404,{'code':'not_found','message':'Route not found','details':{}})
         except Exception: return self.send_json(500,{'code':'internal_error','message':'Request failed','details':{}})
     def log_message(self,*args): pass

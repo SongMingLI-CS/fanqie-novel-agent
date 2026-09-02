@@ -144,6 +144,15 @@ class Store:
     def cancel_job(self,jid): self.db.execute("UPDATE jobs SET status='CANCELLED',updated_at=? WHERE id=? AND status IN ('PENDING','RUNNING')",(now(),jid)); self.db.commit()
     def set_paused(self,nid,paused): self.db.execute("UPDATE novels SET paused=?,updated_at=? WHERE id=?",(int(paused),now(),nid)); self.db.commit()
     def record_export(self,nid,number): self.set_status(nid,number,ChapterStatus.EXPORTED); self.db.execute("UPDATE chapters SET exported_at=? WHERE novel_id=? AND number=?",(now(),nid,number)); self.db.commit()
+    def update_draft(self,cid,changes):
+        ch=self.chapter_by_id(cid)
+        if not ch: raise ValueError('chapter_not_found')
+        allowed={k:changes[k] for k in ('title','goal','content','summary','hook') if k in changes}
+        if not allowed: raise ValueError('no_editable_fields')
+        sets=', '.join(f'{k}=?' for k in allowed); values=list(allowed.values())
+        with self.tx():
+            self.db.execute(f"UPDATE chapters SET {sets},status='REVIEWING',review='{{}}',updated_at=? WHERE id=?",(*values,now(),cid))
+        return self.chapter_by_id(cid)
     def manual_publish(self,nid,number,record):
         with self.tx():
             changed=self.db.execute("UPDATE chapters SET status=?,publish_record=?,published_at=?,updated_at=? WHERE novel_id=? AND number=? AND status='EXPORTED'",(ChapterStatus.PUBLISHED_MANUALLY,dumps(record),record.get("publishedAt",now()),now(),nid,number)).rowcount
