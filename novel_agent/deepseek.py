@@ -1,4 +1,4 @@
-import json, time, urllib.request, urllib.error
+import json, os, ssl, time, urllib.request, urllib.error
 
 
 class DeepSeekError(Exception): pass
@@ -15,7 +15,8 @@ class DeepSeekClient:
         started=time.monotonic(); last=None
         for attempt in range(self.config.max_retries+1):
             try:
-                with self.opener(request,timeout=self.config.timeout) as response: data=json.loads(response.read().decode())
+                context=ssl.create_default_context(cafile=self.config.ca_bundle or None)
+                with self.opener(request,timeout=self.config.timeout,context=context) as response: data=json.loads(response.read().decode())
                 message=data['choices'][0]['message']['content']; usage=data.get('usage',{})
                 return message, {'model':self.config.model,'prompt_version':'novel-writer@1','input_tokens':usage.get('prompt_tokens',0),'output_tokens':usage.get('completion_tokens',0),'duration_ms':round((time.monotonic()-started)*1000),'request_status':'succeeded'}
             except Exception as exc:

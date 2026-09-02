@@ -15,6 +15,8 @@ python3 -m novel_agent.worker
 
 `NOVEL_DATA_DIR` 下的 `novel.sqlite3` 是持久化状态，`exports/` 是导出稿。备份前暂停 Worker，然后复制 SQLite 文件；启用 WAL 时需同时复制 `novel.sqlite3-wal` 与 `novel.sqlite3-shm`，或使用 SQLite 在线备份工具。恢复时停止服务，恢复同一目录，再启动服务和 Worker。不得删除旧的 StoryBible 版本或发布记录。
 
+若运行环境的 Python OpenSSL 找不到系统 CA，设置 `DEEPSEEK_CA_BUNDLE` 指向受信任的 CA bundle；不要通过关闭证书校验解决 TLS 错误。
+
 ## 运维检查
 
 - Worker 重启后会回收过期租约；检查 `jobs.status`、`attempts` 和 `error`。

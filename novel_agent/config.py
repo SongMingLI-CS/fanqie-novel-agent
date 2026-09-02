@@ -7,6 +7,7 @@ from pathlib import Path
 class Config:
     data_dir: Path = Path(os.getenv("NOVEL_DATA_DIR", "./data"))
     base_url: str = os.getenv("DEEPSEEK_BASE_URL", "")
+    ca_bundle: str = os.getenv("DEEPSEEK_CA_BUNDLE", "")
     model: str = os.getenv("DEEPSEEK_MODEL", "deepseek-reasoner")
     max_tokens: int = int(os.getenv("NOVEL_MAX_CHAPTER_TOKENS", "6000"))
     max_retries: int = int(os.getenv("NOVEL_MAX_RETRIES", "3"))
