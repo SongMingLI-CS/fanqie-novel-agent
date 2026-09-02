@@ -16,7 +16,7 @@ class NovelService:
             self.store.set_status(job['novel_id'],job['chapter_number'],'CANCELLED')
             self.store.db.execute("UPDATE jobs SET status='CANCELLED',error=? WHERE id=?",('novel_paused',job['id'])); self.store.db.commit(); return False
         system='You are a structured novel writer. Follow the supplied project skill and Story Bible. Return only valid JSON.'
-        prompt=json.dumps({'skill':skill,'storyBible':bible,'recentChapterSummaries':[x.get('summary','') for x in recent],'chapterNumber':job['chapter_number'],'request':'Plan beats and write the next chapter. Respect all facts; do not invent unauthorized key settings.'},ensure_ascii=False)
+        prompt=json.dumps({'skill':skill,'storyBible':bible,'recentChapterSummaries':[x.get('summary','') for x in recent],'chapterNumber':job['chapter_number'],'request':'Plan beats and write the next chapter. Include a concise summary field. Respect all facts; do not invent unauthorized key settings.'},ensure_ascii=False)
         self.store.set_status(job['novel_id'],job['chapter_number'],'GENERATING')
         json_failure=False
         try:

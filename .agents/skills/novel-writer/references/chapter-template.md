@@ -8,6 +8,7 @@
   "title": "章节标题",
   "chapterGoal": "本章目标",
   "beats": [],
+  "summary": "本章剧情摘要",
   "content": "章节正文",
   "charactersUsed": [],
   "eventsIntroduced": [],
