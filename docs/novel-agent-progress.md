@@ -69,9 +69,10 @@
 - API 增加章节详情、`/publish` 人工确认兼容路由和小说级用量查询；所有未知 API 路由/资源返回结构化 404。
 - 人工发布确认事务现在会应用已审查的 `proposed-story-state`，创建新 StoryBible 版本并更新事件、伏笔和当前剧情位置。
 - 新增持久化 `export_jobs` / `publish_jobs`，导出幂等键和人工发布状态不再只依赖文件或 Chapter 投影。
+- DeepSeek 上下文现在只选取当前章节所需事实并限制在 14,000 字符以内；Reviewer 使用 StoryBible 的 `styleRules.chapterLength` 做长度门禁。
 
 追加验证：
 
-- `make lint && make typecheck && make test && make build`：19/19 测试通过。
+- `make lint && make typecheck && make test && make build`：20/20 测试通过。
 - 并发锁验证：Worker 使用 `BEGIN IMMEDIATE`，每个并发槽使用独立连接；未接入真实 DeepSeek，未伪造外部服务结果。
 - HTTP 冒烟：`GET /` 与 `POST /api/novels` 通过；过程创建的临时 SQLite 已移出仓库。

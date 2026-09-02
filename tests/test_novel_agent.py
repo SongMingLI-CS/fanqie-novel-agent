@@ -21,6 +21,9 @@ class NovelTests(unittest.TestCase):
     def test_generation_history_is_append_only(self):
         raw=json.dumps({'title':'一','chapterGoal':'g','content':'一。\n二。','summary':'s','beats':[]})
         job,_=self.store.create_job(self.novel['id'],1); service=NovelService(self.store,FakeClient(raw),Config(data_dir=Path(self.tmp.name)),Path(__file__).parents[1]); service.process(job); chapter=self.store.chapter(self.novel['id'],1); self.store.update_draft(chapter['id'],{'content':'编辑后'}); self.assertEqual(self.store.db.execute('SELECT COUNT(*) FROM chapter_drafts WHERE chapter_id=?',(chapter['id'],)).fetchone()[0],2)
+    def test_prompt_bible_is_bounded(self):
+        compact=NovelService.compact_bible({'mainline':'x'*100000,'characters':[{'name':str(i)} for i in range(1000)]})
+        self.assertLessEqual(len(json.dumps(compact,ensure_ascii=False)),14000); self.assertTrue(compact.get('contextTruncated') or len(compact.get('characters',[]))<=20)
     def test_duplicate_chapter_job(self):
         a,created=self.store.create_job(self.novel['id'],1); b,created2=self.store.create_job(self.novel['id'],1); self.assertTrue(created); self.assertFalse(created2); self.assertEqual(a['id'],b['id'])
     def test_failed_job_can_resume(self):
