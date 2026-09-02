@@ -43,6 +43,14 @@ class NovelTests(unittest.TestCase):
         self.store.db.execute("UPDATE chapters SET status='EXPORTED' WHERE novel_id=?",(self.novel['id'],)); self.store.db.commit(); self.store.manual_publish(self.novel['id'],1,{'platform':'Fanqie','operator':'u'}); self.assertEqual(self.store.chapter(self.novel['id'],1)['status'],'PUBLISHED_MANUALLY'); self.assertEqual(self.store.get_novel(self.novel['id'])['current_chapter'],1)
     def test_review_without_pass_cannot_export(self):
         result=review({'title':'x','chapterGoal':'g','content':'正文'},self.novel['story_bible'],[],target_words=1000); self.assertFalse(result['passed']); self.assertFalse(result['blockingIssues'])
+    def test_review_blocks_world_timeline_and_foreshadow_conflicts(self):
+        bible={'characters':[],'worldRules':[{'key':'magic'}],'timeline':[{'key':'known'}],'foreshadowing':[{'key':'open','status':'OPEN'}]}
+        result=review({'title':'x','chapterGoal':'g','content':'一。\n二。','stateChanges':[{'rule':'unknown'}],'eventsIntroduced':[{'key':'known'}],'foreshadowingResolved':['missing']},bible,[])
+        self.assertFalse(result['passed']); self.assertIn('unauthorized_world_rule:unknown',result['blockingIssues']); self.assertIn('timeline_event_redefinition:known',result['blockingIssues']); self.assertIn('foreshadowing_not_open:missing',result['blockingIssues'])
+    def test_review_rejects_non_object(self):
+        self.assertIn('invalid_structured_output',review([],{},[])['blockingIssues'])
+    def test_expired_running_job_is_recovered(self):
+        job,_=self.store.create_job(self.novel['id'],1); self.store.db.execute("UPDATE jobs SET status='RUNNING',locked_until='2000-01-01T00:00:00+00:00' WHERE id=?",(job['id'],)); self.store.db.commit(); claimed=self.store.claim_job(); self.assertEqual(claimed['id'],job['id']); self.assertEqual(claimed['status'],'RUNNING'); self.assertEqual(self.store.get_job(job['id'])['attempts'],1)
     def test_edit_invalidates_review(self):
         self.store.create_job(self.novel['id'],1); self.store.db.execute("UPDATE chapters SET title='旧',content='正文',review=? WHERE novel_id=?",(json.dumps({'passed':True}),self.novel['id'])); self.store.db.commit(); ch=self.store.chapter(self.novel['id'],1); edited=self.store.update_draft(ch['id'],{'content':'修改后'}); self.assertEqual(edited['status'],'REVIEWING'); self.assertEqual(edited['review'],{})
     def test_generation_structured_response(self):
