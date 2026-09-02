@@ -1,0 +1,121 @@
+import json
+import sqlite3
+import uuid
+from contextlib import contextmanager
+from datetime import datetime, timezone
+from pathlib import Path
+
+from .models import ChapterStatus
+
+
+def now():
+    return datetime.now(timezone.utc).isoformat()
+
+
+def dumps(value):
+    return json.dumps(value, ensure_ascii=False)
+
+
+class Store:
+    def __init__(self, path: Path):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self.db = sqlite3.connect(path, check_same_thread=False)
+        self.db.row_factory = sqlite3.Row
+        self.db.execute("PRAGMA foreign_keys=ON")
+        self.db.execute("PRAGMA journal_mode=WAL")
+        self.db.executescript("""
+        CREATE TABLE IF NOT EXISTS novels (id TEXT PRIMARY KEY, title TEXT NOT NULL, volume TEXT DEFAULT '', genre TEXT DEFAULT '', current_chapter INTEGER DEFAULT 0, paused INTEGER DEFAULT 0, story_bible_version INTEGER DEFAULT 1, skill_version TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS story_bibles (novel_id TEXT NOT NULL, version INTEGER NOT NULL, content TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY(novel_id,version), FOREIGN KEY(novel_id) REFERENCES novels(id));
+        CREATE TABLE IF NOT EXISTS chapters (id TEXT PRIMARY KEY, novel_id TEXT NOT NULL, number INTEGER NOT NULL, status TEXT NOT NULL, title TEXT DEFAULT '', goal TEXT DEFAULT '', content TEXT DEFAULT '', summary TEXT DEFAULT '', characters TEXT DEFAULT '[]', events TEXT DEFAULT '[]', foreshadowing_added TEXT DEFAULT '[]', foreshadowing_resolved TEXT DEFAULT '[]', state_changes TEXT DEFAULT '[]', hook TEXT DEFAULT '', raw_response TEXT DEFAULT '', review TEXT DEFAULT '{}', proposed_state TEXT DEFAULT '{}', model TEXT DEFAULT '', generated_at TEXT DEFAULT '', exported_at TEXT DEFAULT '', published_at TEXT DEFAULT '', publish_record TEXT DEFAULT '{}', created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(novel_id,number), FOREIGN KEY(novel_id) REFERENCES novels(id));
+        CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, novel_id TEXT NOT NULL, chapter_number INTEGER NOT NULL, kind TEXT NOT NULL, status TEXT NOT NULL, idempotency_key TEXT NOT NULL UNIQUE, attempts INTEGER DEFAULT 0, locked_until TEXT, error TEXT DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(novel_id,chapter_number,kind,status));
+        CREATE TABLE IF NOT EXISTS usage (id TEXT PRIMARY KEY, job_id TEXT, model TEXT, prompt_version TEXT, input_tokens INTEGER DEFAULT 0, output_tokens INTEGER DEFAULT 0, duration_ms INTEGER DEFAULT 0, request_status TEXT, error TEXT, created_at TEXT NOT NULL);
+        """)
+        self.db.commit()
+
+    @contextmanager
+    def tx(self):
+        try:
+            yield
+            self.db.commit()
+        except Exception:
+            self.db.rollback()
+            raise
+
+    def create_novel(self, title, bible, genre="", volume=""):
+        nid, ts = str(uuid.uuid4()), now()
+        with self.tx():
+            self.db.execute("INSERT INTO novels VALUES (?,?,?,?,?,?,?,?,?,?)", (nid,title,volume,genre,0,0,1,"novel-writer@1",ts,ts))
+            self.db.execute("INSERT INTO story_bibles VALUES (?,?,?,?)", (nid,1,dumps(bible),ts))
+        return self.get_novel(nid)
+
+    def get_novel(self, nid):
+        row = self.db.execute("SELECT * FROM novels WHERE id=?", (nid,)).fetchone()
+        if not row: return None
+        result = dict(row)
+        bible = self.db.execute("SELECT content FROM story_bibles WHERE novel_id=? AND version=?", (nid,row["story_bible_version"])).fetchone()
+        result["story_bible"] = json.loads(bible[0]) if bible else {}
+        return result
+
+    def update_bible(self, nid, content):
+        row = self.db.execute("SELECT MAX(version) FROM story_bibles WHERE novel_id=?", (nid,)).fetchone(); version = int(row[0] or 0) + 1
+        with self.tx():
+            self.db.execute("INSERT INTO story_bibles VALUES (?,?,?,?)", (nid,version,dumps(content),now()))
+            self.db.execute("UPDATE novels SET story_bible_version=?,updated_at=? WHERE id=?", (version,now(),nid))
+        return version
+
+    def create_job(self, nid, number, kind="generate"):
+        key = f"{nid}:{number}:{kind}"
+        existing = self.db.execute("SELECT * FROM jobs WHERE idempotency_key=?", (key,)).fetchone()
+        if existing and existing["status"] not in ("FAILED", "CANCELLED"): return dict(existing), False
+        if existing:
+            with self.tx(): self.db.execute("UPDATE jobs SET status='PENDING',error='',updated_at=? WHERE id=?", (now(), existing['id']))
+            return dict(self.db.execute("SELECT * FROM jobs WHERE id=?", (existing['id'],)).fetchone()), True
+        jid = str(uuid.uuid4()); ts = now()
+        with self.tx():
+            self.db.execute("INSERT INTO jobs VALUES (?,?,?,?,?,?,?,?,?,?,?)", (jid,nid,number,kind,"PENDING",key,0,None,"",ts,ts))
+            self.db.execute("INSERT OR IGNORE INTO chapters(id,novel_id,number,status,created_at,updated_at) VALUES (?,?,?,?,?,?)", (str(uuid.uuid4()),nid,number,ChapterStatus.PENDING,ts,ts))
+        return dict(self.db.execute("SELECT * FROM jobs WHERE id=?", (jid,)).fetchone()), True
+
+    def claim_job(self):
+        row = self.db.execute("SELECT * FROM jobs WHERE status='PENDING' ORDER BY created_at LIMIT 1").fetchone()
+        if not row: return None
+        with self.tx():
+            self.db.execute("UPDATE jobs SET status='RUNNING',attempts=attempts+1,locked_until=?,updated_at=? WHERE id=? AND status='PENDING'", (now(),now(),row["id"]))
+        return dict(self.db.execute("SELECT * FROM jobs WHERE id=?", (row["id"],)).fetchone())
+
+    def chapter(self, nid, number):
+        row = self.db.execute("SELECT * FROM chapters WHERE novel_id=? AND number=?", (nid,number)).fetchone()
+        if not row: return None
+        result = dict(row)
+        for key in ("characters","events","foreshadowing_added","foreshadowing_resolved","state_changes","review","proposed_state","publish_record"):
+            result[key] = json.loads(result[key] or ("{}" if key in ("review","proposed_state","publish_record") else "[]"))
+        return result
+
+    def chapters(self, nid):
+        return [self.chapter(nid,r[0]) for r in self.db.execute("SELECT number FROM chapters WHERE novel_id=? ORDER BY number",(nid,)).fetchall()]
+
+    def chapter_by_id(self, cid):
+        row=self.db.execute("SELECT novel_id,number FROM chapters WHERE id=?",(cid,)).fetchone()
+        return self.chapter(row[0],row[1]) if row else None
+
+    def jobs(self,nid): return [dict(x) for x in self.db.execute("SELECT * FROM jobs WHERE novel_id=? ORDER BY created_at DESC",(nid,)).fetchall()]
+
+    def recent(self, nid, limit=3): return self.chapters(nid)[-limit:]
+
+    def save_generation(self, job, output, raw, review, usage, proposed):
+        c = self.chapter(job["novel_id"],job["chapter_number"]); ts=now(); status = ChapterStatus.WAITING_APPROVAL if review["passed"] else ChapterStatus.FAILED
+        with self.tx():
+            self.db.execute("UPDATE chapters SET status=?,title=?,goal=?,content=?,summary=?,characters=?,events=?,foreshadowing_added=?,foreshadowing_resolved=?,state_changes=?,hook=?,raw_response=?,review=?,proposed_state=?,model=?,generated_at=?,updated_at=? WHERE id=?", (status,output.get("title",""),output.get("chapterGoal",""),output.get("content",""),output.get("chapterGoal",""),dumps(output.get("charactersUsed",[])),dumps(output.get("eventsIntroduced",[])),dumps(output.get("foreshadowingAdded",[])),dumps(output.get("foreshadowingResolved",[])),dumps(output.get("stateChanges",[])),output.get("nextChapterHook",""),raw,dumps(review),dumps(proposed),usage.get("model",""),ts,ts,c["id"]))
+            self.db.execute("UPDATE jobs SET status=?,error=?,updated_at=? WHERE id=?", ("SUCCEEDED" if review["passed"] else "FAILED",dumps(review.get("blockingIssues",[])),ts,job["id"]))
+            self.db.execute("INSERT INTO usage VALUES (?,?,?,?,?,?,?,?,?,?)", (str(uuid.uuid4()),job["id"],usage.get("model"),usage.get("prompt_version"),usage.get("input_tokens",0),usage.get("output_tokens",0),usage.get("duration_ms",0),usage.get("request_status"),usage.get("error"),ts))
+
+    def set_status(self,nid,number,status): self.db.execute("UPDATE chapters SET status=?,updated_at=? WHERE novel_id=? AND number=?",(status,now(),nid,number)); self.db.commit()
+    def get_job(self,jid):
+        row=self.db.execute("SELECT * FROM jobs WHERE id=?",(jid,)).fetchone(); return dict(row) if row else None
+    def cancel_job(self,jid): self.db.execute("UPDATE jobs SET status='CANCELLED',updated_at=? WHERE id=? AND status IN ('PENDING','RUNNING')",(now(),jid)); self.db.commit()
+    def set_paused(self,nid,paused): self.db.execute("UPDATE novels SET paused=?,updated_at=? WHERE id=?",(int(paused),now(),nid)); self.db.commit()
+    def record_export(self,nid,number): self.set_status(nid,number,ChapterStatus.EXPORTED); self.db.execute("UPDATE chapters SET exported_at=? WHERE novel_id=? AND number=?",(now(),nid,number)); self.db.commit()
+    def manual_publish(self,nid,number,record):
+        with self.tx():
+            self.db.execute("UPDATE chapters SET status=?,publish_record=?,published_at=?,updated_at=? WHERE novel_id=? AND number=? AND status IN ('EXPORTED','WAITING_APPROVAL')",(ChapterStatus.PUBLISHED_MANUALLY,dumps(record),record.get("publishedAt",now()),now(),nid,number))
+            self.db.execute("UPDATE novels SET current_chapter=MAX(current_chapter,?),updated_at=? WHERE id=?",(number,now(),nid))

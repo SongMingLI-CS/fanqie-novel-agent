@@ -15,7 +15,7 @@
 | WorldRule | `novel_id`, `key`, `description`, `severity`; `UNIQUE(novel_id,key)` |
 | TimelineEvent | `novel_id`, `event_key`, `occurred_at`, `description`, `chapter_number`; 唯一事件键 |
 | Foreshadowing | `novel_id`, `key`, `description`, `status`, `introduced_chapter`, `resolved_chapter`; 状态为 `OPEN/RESOLVED` |
-| Chapter | `novel_id`, `chapter_number`, `status`, `title`, `goal`, `content`, summaries, `published_at`; `UNIQUE(novel_id,chapter_number)` |
+| Chapter | `novel_id`, `chapter_number`, `status`, `title`, `goal`, `content`, summaries, `published_at`; status includes `EXPORTED/PUBLISHED_MANUALLY`; `UNIQUE(novel_id,chapter_number)` |
 | ChapterDraft | `chapter_id`, `version`, structured output, proposed story state, raw response, review pointer; 追加版本 |
 | GenerationJob | `novel_id`, `chapter_id`, `status`, `idempotency_key`, attempts, lease, error; 活动任务唯一 |
 | ReviewResult | `chapter_draft_id`, passed, score, issues, warnings, blocking issues, checked_at |

@@ -4,8 +4,8 @@
 
 - 分支：`codex/novel-agent`
 - 开始日期：2026-09-02
-- 当前阶段：Phase 1 完成
-- 最近提交：待提交
+- 当前阶段：Phase 2-10 实现中
+- 最近提交：d78416f
 
 ## Phase 1：审计、Skill 和剧情状态模型
 
@@ -29,6 +29,25 @@
 - 运行时尚未建立；DeepSeek 凭据、外部平台授权和部署环境均待配置。
 - SQLite、Fastify、TypeScript 是针对空仓库的明确基线决策，不是对现有项目的审计发现。
 
-## 后续阶段
+## Phase 2-10：可运行基线
 
-Phase 2 未开始。每个阶段完成后在此记录精确命令和结果，并创建独立 commit。
+状态：基础闭环完成，后续增强项保留。
+
+- 服务端 DeepSeek client：服务端环境变量、可配置模型/地址/超时/token、有限指数退避、用量记录、非法 JSON 一次重试。
+- 规划/生成/审查：读取四份 Skill reference，裁剪最近摘要，保存结构化章节、审查结果和 proposed state。
+- SQLite 与 Worker：章节唯一键、任务幂等、失败恢复、取消、暂停标志、独立 Worker 进程。
+- 半自动发布：TXT/Markdown/JSON 导出和人工发布确认；阻断审查不可导出；不接入番茄网页。
+- API/控制台：小说、StoryBible、章节、job、生成、审查、批准、导出、人工发布、暂停/继续路由及最小控制页。
+- 测试：8 项单元/集成级测试覆盖 StoryBible、结构化生成、非法响应、重复/恢复、审查阻断、导出和人工发布。
+
+验证命令与结果：
+
+- `python3 -m unittest discover -s tests -v`：8/8 通过。
+- `python3 -m compileall -q novel_agent tests`：通过。
+- `git diff --check`：通过。
+
+限制与下一步：
+
+- 本仓库没有既有 lint/typecheck/build 工具，Makefile 以 Python 编译检查和 diff 检查作为可重复基线；未伪造 TypeScript 或前端 production build 结果。
+- DOCX 不实现（审计发现无既有文档能力）；可未来增加明确适配器。
+- 外部身份认证、SQLite 多实例行锁、任务超时/最大并发配置和复杂前端编辑器仍是生产增强项；当前默认单机 Worker，半自动流程不自动创建无限章节。
