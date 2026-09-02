@@ -12,6 +12,9 @@ class NovelService:
         return novel,recent,bible,skill
     def process(self,job):
         novel,recent,bible,skill=self.context(job['novel_id'],job['chapter_number']); self.store.set_status(job['novel_id'],job['chapter_number'],'PLANNING')
+        if novel['paused']:
+            self.store.set_status(job['novel_id'],job['chapter_number'],'CANCELLED')
+            self.store.db.execute("UPDATE jobs SET status='CANCELLED',error=? WHERE id=?",('novel_paused',job['id'])); self.store.db.commit(); return False
         system='You are a structured novel writer. Follow the supplied project skill and Story Bible. Return only valid JSON.'
         prompt=json.dumps({'skill':skill,'storyBible':bible,'recentChapterSummaries':[x.get('summary','') for x in recent],'chapterNumber':job['chapter_number'],'request':'Plan beats and write the next chapter. Respect all facts; do not invent unauthorized key settings.'},ensure_ascii=False)
         self.store.set_status(job['novel_id'],job['chapter_number'],'GENERATING')

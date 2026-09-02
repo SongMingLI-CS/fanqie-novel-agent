@@ -59,8 +59,9 @@
 - 导出现在同时要求 `ReviewResult.passed=true`、无 `blockingIssues` 且章节处于 `DRAFT_READY/WAITING_APPROVAL`。
 - 人工发布现在严格要求先有 `EXPORTED` 状态，并在确认事务中推进 `current_chapter`。
 - 重复导出返回既有文件和 `idempotent=true`；无效状态不会覆盖已有稿件。
+- 暂停小说拒绝新生成任务；`continue` 只创建当前下一章，连续 N 章也必须逐章人工确认后继续。
 
 追加验证：
 
-- `make lint && make typecheck && make test && make build`：11/11 测试通过。
+- `make lint && make typecheck && make test && make build`：12/12 测试通过。
 - HTTP 冒烟：`GET /` 与 `POST /api/novels` 通过；过程创建的临时 SQLite 已移出仓库。

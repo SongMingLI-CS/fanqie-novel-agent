@@ -37,9 +37,9 @@ class Handler(BaseHTTPRequestHandler):
                 job,created=store.create_job(parts[2],int(data.get('chapterNumber') or store.get_novel(parts[2])['current_chapter']+1)); return self.send_json(202 if created else 200,job)
             if len(parts)==4 and parts[:2]==['api','jobs'] and parts[3]=='cancel': store.cancel_job(parts[2]); return self.send_json(200,store.get_job(parts[2]))
             if len(parts)==4 and parts[:2]==['api','novels'] and parts[3]=='continue':
-                novel=store.get_novel(parts[2]); count=max(1,int(data.get('count',1))); jobs=[]
-                for number in range(novel['current_chapter']+1,novel['current_chapter']+count+1): jobs.append(store.create_job(parts[2],number)[0])
-                return self.send_json(202,jobs)
+                store.set_paused(parts[2],False)
+                novel=store.get_novel(parts[2]); job,created=store.create_job(parts[2],novel['current_chapter']+1)
+                return self.send_json(202,{'job':job,'created':created,'requestedCount':max(1,int(data.get('count',1))),'note':'每章人工确认后再次调用 continue 才会创建下一章'})
             if len(parts)==4 and parts[:3]==['api','chapters'] and parts[3]=='export':
                 ch=store.chapter(data['novelId'],int(data['chapterNumber']))
                 fmt=data.get('format','txt'); existing_path=config.data_dir/'exports'/f"{store.get_novel(data['novelId'])['id']}-{ch['number']}.{fmt}"

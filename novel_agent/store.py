@@ -27,11 +27,31 @@ class Store:
         self.db.executescript("""
         CREATE TABLE IF NOT EXISTS novels (id TEXT PRIMARY KEY, title TEXT NOT NULL, volume TEXT DEFAULT '', genre TEXT DEFAULT '', current_chapter INTEGER DEFAULT 0, paused INTEGER DEFAULT 0, story_bible_version INTEGER DEFAULT 1, skill_version TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS story_bibles (novel_id TEXT NOT NULL, version INTEGER NOT NULL, content TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY(novel_id,version), FOREIGN KEY(novel_id) REFERENCES novels(id));
-        CREATE TABLE IF NOT EXISTS chapters (id TEXT PRIMARY KEY, novel_id TEXT NOT NULL, number INTEGER NOT NULL, status TEXT NOT NULL, title TEXT DEFAULT '', goal TEXT DEFAULT '', content TEXT DEFAULT '', summary TEXT DEFAULT '', characters TEXT DEFAULT '[]', events TEXT DEFAULT '[]', foreshadowing_added TEXT DEFAULT '[]', foreshadowing_resolved TEXT DEFAULT '[]', state_changes TEXT DEFAULT '[]', hook TEXT DEFAULT '', raw_response TEXT DEFAULT '', review TEXT DEFAULT '{}', proposed_state TEXT DEFAULT '{}', model TEXT DEFAULT '', generated_at TEXT DEFAULT '', exported_at TEXT DEFAULT '', published_at TEXT DEFAULT '', publish_record TEXT DEFAULT '{}', created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(novel_id,number), FOREIGN KEY(novel_id) REFERENCES novels(id));
+        CREATE TABLE IF NOT EXISTS chapters (id TEXT PRIMARY KEY, novel_id TEXT NOT NULL, number INTEGER NOT NULL, status TEXT NOT NULL, title TEXT DEFAULT '', goal TEXT DEFAULT '', beats TEXT DEFAULT '[]', content TEXT DEFAULT '', summary TEXT DEFAULT '', characters TEXT DEFAULT '[]', events TEXT DEFAULT '[]', foreshadowing_added TEXT DEFAULT '[]', foreshadowing_resolved TEXT DEFAULT '[]', state_changes TEXT DEFAULT '[]', hook TEXT DEFAULT '', raw_response TEXT DEFAULT '', review TEXT DEFAULT '{}', proposed_state TEXT DEFAULT '{}', model TEXT DEFAULT '', generated_at TEXT DEFAULT '', exported_at TEXT DEFAULT '', published_at TEXT DEFAULT '', publish_record TEXT DEFAULT '{}', created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(novel_id,number), FOREIGN KEY(novel_id) REFERENCES novels(id));
+        CREATE TABLE IF NOT EXISTS characters (novel_id TEXT NOT NULL, key TEXT NOT NULL, data TEXT NOT NULL, PRIMARY KEY(novel_id,key));
+        CREATE TABLE IF NOT EXISTS world_rules (novel_id TEXT NOT NULL, key TEXT NOT NULL, data TEXT NOT NULL, PRIMARY KEY(novel_id,key));
+        CREATE TABLE IF NOT EXISTS timeline_events (novel_id TEXT NOT NULL, key TEXT NOT NULL, data TEXT NOT NULL, PRIMARY KEY(novel_id,key));
+        CREATE TABLE IF NOT EXISTS foreshadowing (novel_id TEXT NOT NULL, key TEXT NOT NULL, data TEXT NOT NULL, PRIMARY KEY(novel_id,key));
         CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, novel_id TEXT NOT NULL, chapter_number INTEGER NOT NULL, kind TEXT NOT NULL, status TEXT NOT NULL, idempotency_key TEXT NOT NULL UNIQUE, attempts INTEGER DEFAULT 0, locked_until TEXT, error TEXT DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(novel_id,chapter_number,kind,status));
         CREATE TABLE IF NOT EXISTS usage (id TEXT PRIMARY KEY, job_id TEXT, model TEXT, prompt_version TEXT, input_tokens INTEGER DEFAULT 0, output_tokens INTEGER DEFAULT 0, duration_ms INTEGER DEFAULT 0, request_status TEXT, error TEXT, created_at TEXT NOT NULL);
         """)
+        self._ensure_column('chapters','beats',"TEXT DEFAULT '[]'")
         self.db.commit()
+
+    def close(self):
+        self.db.close()
+
+    def _ensure_column(self, table, name, definition):
+        columns={row[1] for row in self.db.execute(f"PRAGMA table_info({table})")}
+        if name not in columns: self.db.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
+
+    def _sync_bible(self, nid, bible):
+        mappings=(('characters','characters'),('world_rules','worldRules'),('timeline_events','timeline'),('foreshadowing','foreshadowing'))
+        for table,key in mappings:
+            values=bible.get(key,[]) or []
+            for index,item in enumerate(values):
+                item=item if isinstance(item,dict) else {'value':item}; item_key=str(item.get('key') or item.get('name') or item.get('id') or index)
+                self.db.execute(f"INSERT INTO {table}(novel_id,key,data) VALUES (?,?,?) ON CONFLICT(novel_id,key) DO UPDATE SET data=excluded.data",(nid,item_key,dumps(item)))
 
     @contextmanager
     def tx(self):
@@ -47,6 +67,7 @@ class Store:
         with self.tx():
             self.db.execute("INSERT INTO novels VALUES (?,?,?,?,?,?,?,?,?,?)", (nid,title,volume,genre,0,0,1,"novel-writer@1",ts,ts))
             self.db.execute("INSERT INTO story_bibles VALUES (?,?,?,?)", (nid,1,dumps(bible),ts))
+            self._sync_bible(nid,bible)
         return self.get_novel(nid)
 
     def get_novel(self, nid):
@@ -61,11 +82,14 @@ class Store:
         row = self.db.execute("SELECT MAX(version) FROM story_bibles WHERE novel_id=?", (nid,)).fetchone(); version = int(row[0] or 0) + 1
         with self.tx():
             self.db.execute("INSERT INTO story_bibles VALUES (?,?,?,?)", (nid,version,dumps(content),now()))
+            self._sync_bible(nid,content)
             self.db.execute("UPDATE novels SET story_bible_version=?,updated_at=? WHERE id=?", (version,now(),nid))
         return version
 
     def create_job(self, nid, number, kind="generate"):
-        if not self.get_novel(nid): raise ValueError("novel_not_found")
+        novel=self.get_novel(nid)
+        if not novel: raise ValueError("novel_not_found")
+        if novel['paused']: raise ValueError("novel_is_paused")
         if number < 1: raise ValueError("chapter_number_must_be_positive")
         key = f"{nid}:{number}:{kind}"
         existing = self.db.execute("SELECT * FROM jobs WHERE idempotency_key=?", (key,)).fetchone()
@@ -92,7 +116,7 @@ class Store:
         row = self.db.execute("SELECT * FROM chapters WHERE novel_id=? AND number=?", (nid,number)).fetchone()
         if not row: return None
         result = dict(row)
-        for key in ("characters","events","foreshadowing_added","foreshadowing_resolved","state_changes","review","proposed_state","publish_record"):
+        for key in ("beats","characters","events","foreshadowing_added","foreshadowing_resolved","state_changes","review","proposed_state","publish_record"):
             result[key] = json.loads(result[key] or ("{}" if key in ("review","proposed_state","publish_record") else "[]"))
         return result
 
@@ -110,7 +134,7 @@ class Store:
     def save_generation(self, job, output, raw, review, usage, proposed):
         c = self.chapter(job["novel_id"],job["chapter_number"]); ts=now(); status = ChapterStatus.WAITING_APPROVAL if review["passed"] else ChapterStatus.FAILED
         with self.tx():
-            self.db.execute("UPDATE chapters SET status=?,title=?,goal=?,content=?,summary=?,characters=?,events=?,foreshadowing_added=?,foreshadowing_resolved=?,state_changes=?,hook=?,raw_response=?,review=?,proposed_state=?,model=?,generated_at=?,updated_at=? WHERE id=?", (status,output.get("title",""),output.get("chapterGoal",""),output.get("content",""),output.get("chapterGoal",""),dumps(output.get("charactersUsed",[])),dumps(output.get("eventsIntroduced",[])),dumps(output.get("foreshadowingAdded",[])),dumps(output.get("foreshadowingResolved",[])),dumps(output.get("stateChanges",[])),output.get("nextChapterHook",""),raw,dumps(review),dumps(proposed),usage.get("model",""),ts,ts,c["id"]))
+            self.db.execute("UPDATE chapters SET status=?,title=?,goal=?,beats=?,content=?,summary=?,characters=?,events=?,foreshadowing_added=?,foreshadowing_resolved=?,state_changes=?,hook=?,raw_response=?,review=?,proposed_state=?,model=?,generated_at=?,updated_at=? WHERE id=?", (status,output.get("title",""),output.get("chapterGoal",""),dumps(output.get("beats",[])),output.get("content",""),output.get("chapterGoal",""),dumps(output.get("charactersUsed",[])),dumps(output.get("eventsIntroduced",[])),dumps(output.get("foreshadowingAdded",[])),dumps(output.get("foreshadowingResolved",[])),dumps(output.get("stateChanges",[])),output.get("nextChapterHook",""),raw,dumps(review),dumps(proposed),usage.get("model",""),ts,ts,c["id"]))
             self.db.execute("UPDATE jobs SET status=?,error=?,updated_at=? WHERE id=?", ("SUCCEEDED" if review["passed"] else "FAILED",dumps(review.get("blockingIssues",[])),ts,job["id"]))
             self.db.execute("INSERT INTO usage VALUES (?,?,?,?,?,?,?,?,?,?)", (str(uuid.uuid4()),job["id"],usage.get("model"),usage.get("prompt_version"),usage.get("input_tokens",0),usage.get("output_tokens",0),usage.get("duration_ms",0),usage.get("request_status"),usage.get("error"),ts))
 

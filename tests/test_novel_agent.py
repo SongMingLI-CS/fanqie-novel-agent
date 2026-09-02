@@ -12,14 +12,19 @@ class FakeClient:
     def complete(self,*args): return self.text, {'model':'test-r1','prompt_version':'novel-writer@1','input_tokens':1,'output_tokens':2,'duration_ms':1,'request_status':'succeeded'}
 
 class NovelTests(unittest.TestCase):
-    def setUp(self): self.tmp=tempfile.TemporaryDirectory(); self.store=Store(Path(self.tmp.name)/'db.sqlite3'); self.novel=self.store.create_novel('测试小说',{'characters':[{'name':'林默'}],'forbiddenContent':['SECRET']})
-    def tearDown(self): self.tmp.cleanup()
+    def setUp(self): self.tmp=tempfile.TemporaryDirectory(); self.store=Store(Path(self.tmp.name)/'db.sqlite3'); self.novel=self.store.create_novel('测试小说',{'characters':[{'name':'林默'}],'worldRules':[{'key':'magic','description':'规则'}],'timeline':[{'key':'e1','description':'事件'}],'foreshadowing':[{'key':'f1','status':'OPEN'}],'forbiddenContent':['SECRET']})
+    def tearDown(self): self.store.close(); self.tmp.cleanup()
     def test_story_bible_and_version(self):
         self.assertEqual(self.novel['story_bible']['characters'][0]['name'],'林默'); self.assertEqual(self.store.update_bible(self.novel['id'],{'x':1}),2); self.assertEqual(self.store.get_novel(self.novel['id'])['story_bible'],{'x':1})
+        self.assertEqual(self.store.db.execute('SELECT COUNT(*) FROM characters WHERE novel_id=?',(self.novel['id'],)).fetchone()[0],1)
+        self.assertEqual(self.store.db.execute('SELECT COUNT(*) FROM foreshadowing WHERE novel_id=?',(self.novel['id'],)).fetchone()[0],1)
     def test_duplicate_chapter_job(self):
         a,created=self.store.create_job(self.novel['id'],1); b,created2=self.store.create_job(self.novel['id'],1); self.assertTrue(created); self.assertFalse(created2); self.assertEqual(a['id'],b['id'])
     def test_failed_job_can_resume(self):
         a,_=self.store.create_job(self.novel['id'],1); self.store.db.execute("UPDATE jobs SET status='FAILED' WHERE id=?",(a['id'],)); self.store.db.commit(); b,created=self.store.create_job(self.novel['id'],1); self.assertTrue(created); self.assertEqual(a['id'],b['id']); self.assertEqual(b['status'],'PENDING')
+    def test_paused_novel_rejects_new_job(self):
+        self.store.set_paused(self.novel['id'],True)
+        with self.assertRaises(ValueError): self.store.create_job(self.novel['id'],1)
     def test_review_blocks_export(self):
         out={'title':'','content':'','chapterGoal':'x'}; result=review(out,self.novel['story_bible'],[]); self.assertFalse(result['passed']); self.assertTrue(result['blockingIssues'])
         with self.assertRaises(ValueError): export_chapter({'number':1,'title':'','content':'','review':result},self.novel,'txt',Path(self.tmp.name))
