@@ -13,4 +13,3 @@ class Config:
     timeout: int = int(os.getenv("NOVEL_REQUEST_TIMEOUT", "90"))
     publish_enabled: bool = os.getenv("NOVEL_PUBLISH_ENABLED", "false").lower() == "true"
     require_review: bool = os.getenv("NOVEL_REQUIRE_REVIEW", "true").lower() == "true"
-
