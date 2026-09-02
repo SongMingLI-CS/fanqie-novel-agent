@@ -104,13 +104,18 @@ class Store:
         return dict(self.db.execute("SELECT * FROM jobs WHERE id=?", (jid,)).fetchone()), True
 
     def claim_job(self, lease_seconds=900):
-        self.db.execute("UPDATE jobs SET status='PENDING',locked_until=NULL WHERE status='RUNNING' AND locked_until < ?", (now(),))
-        row = self.db.execute("SELECT * FROM jobs WHERE status='PENDING' ORDER BY created_at LIMIT 1").fetchone()
-        if not row: return None
-        with self.tx():
+        try:
+            self.db.execute('BEGIN IMMEDIATE')
+            self.db.execute("UPDATE jobs SET status='PENDING',locked_until=NULL WHERE status='RUNNING' AND locked_until < ?", (now(),))
+            row = self.db.execute("SELECT * FROM jobs WHERE status='PENDING' ORDER BY created_at LIMIT 1").fetchone()
+            if not row:
+                self.db.commit(); return None
             lease=(datetime.now(timezone.utc)+timedelta(seconds=lease_seconds)).isoformat()
             self.db.execute("UPDATE jobs SET status='RUNNING',attempts=attempts+1,locked_until=?,updated_at=? WHERE id=? AND status='PENDING'", (lease,now(),row["id"]))
-        return dict(self.db.execute("SELECT * FROM jobs WHERE id=?", (row["id"],)).fetchone())
+            self.db.commit()
+            return dict(self.db.execute("SELECT * FROM jobs WHERE id=?", (row["id"],)).fetchone())
+        except Exception:
+            self.db.rollback(); raise
 
     def chapter(self, nid, number):
         row = self.db.execute("SELECT * FROM chapters WHERE novel_id=? AND number=?", (nid,number)).fetchone()

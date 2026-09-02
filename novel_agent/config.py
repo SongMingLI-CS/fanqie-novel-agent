@@ -13,6 +13,7 @@ class Config:
     timeout: int = int(os.getenv("NOVEL_REQUEST_TIMEOUT", "90"))
     job_timeout: int = int(os.getenv("NOVEL_JOB_TIMEOUT", "900"))
     worker_once: bool = os.getenv("NOVEL_WORKER_ONCE", "false").lower() == "true"
+    worker_concurrency: int = max(1, int(os.getenv("NOVEL_WORKER_CONCURRENCY", "1")))
     max_job_attempts: int = int(os.getenv("NOVEL_MAX_JOB_ATTEMPTS", "3"))
     auth_token: str = os.getenv("NOVEL_AUTH_TOKEN", "")
     publish_enabled: bool = os.getenv("NOVEL_PUBLISH_ENABLED", "false").lower() == "true"
