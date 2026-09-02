@@ -41,6 +41,8 @@ class NovelTests(unittest.TestCase):
         self.store.create_job(self.novel['id'],1)
         with self.assertRaises(ValueError): self.store.manual_publish(self.novel['id'],1,{'platform':'Fanqie','operator':'u'})
         self.store.db.execute("UPDATE chapters SET status='EXPORTED' WHERE novel_id=?",(self.novel['id'],)); self.store.db.commit(); self.store.manual_publish(self.novel['id'],1,{'platform':'Fanqie','operator':'u'}); self.assertEqual(self.store.chapter(self.novel['id'],1)['status'],'PUBLISHED_MANUALLY'); self.assertEqual(self.store.get_novel(self.novel['id'])['current_chapter'],1)
+    def test_manual_publish_applies_proposed_story_state(self):
+        self.store.create_job(self.novel['id'],1); ch=self.store.chapter(self.novel['id'],1); self.store.db.execute("UPDATE chapters SET status='EXPORTED',proposed_state=? WHERE id=?",(json.dumps({'events':[{'key':'new-event'}],'foreshadowingResolved':['f1']}),ch['id'])); self.store.db.commit(); self.store.manual_publish(self.novel['id'],1,{'platform':'manual','operator':'u'}); novel=self.store.get_novel(self.novel['id']); self.assertEqual(novel['story_bible_version'],2); self.assertEqual(novel['story_bible']['currentChapter'],1); self.assertEqual(novel['story_bible']['foreshadowing'][0]['status'],'RESOLVED')
     def test_review_without_pass_cannot_export(self):
         result=review({'title':'x','chapterGoal':'g','content':'正文'},self.novel['story_bible'],[],target_words=1000); self.assertFalse(result['passed']); self.assertFalse(result['blockingIssues'])
     def test_review_blocks_world_timeline_and_foreshadow_conflicts(self):

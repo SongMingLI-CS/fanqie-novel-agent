@@ -182,4 +182,15 @@ class Store:
             if not changed: raise ValueError("chapter_must_be_exported_before_manual_publish")
             ch=self.chapter(nid,number)
             self.db.execute("INSERT INTO publish_records VALUES (?,?,?,?,?,?,?,?)",(str(uuid.uuid4()),ch['id'],record['platform'],record.get('externalUrl',''),record.get('publishedAt',now()),record['operator'],record.get('notes',''),now()))
+            novel=self.get_novel(nid); bible=dict(novel['story_bible']); proposed=ch.get('proposed_state',{})
+            bible['currentChapter']=number; bible['currentPosition']=proposed.get('currentPosition',bible.get('currentPosition',''))
+            for key in ('events','eventsIntroduced'):
+                for event in proposed.get(key,[]):
+                    if event not in bible.get('events',[]): bible.setdefault('events',[]).append(event)
+            resolved={x.get('key') if isinstance(x,dict) else x for x in proposed.get('foreshadowingResolved',[])}
+            for item in bible.get('foreshadowing',[]):
+                if isinstance(item,dict) and item.get('key') in resolved: item['status']='RESOLVED'; item['resolvedChapter']=number
+            version=int(self.db.execute("SELECT MAX(version) FROM story_bibles WHERE novel_id=?",(nid,)).fetchone()[0])+1
+            self.db.execute("INSERT INTO story_bibles VALUES (?,?,?,?)",(nid,version,dumps(bible),now())); self._sync_bible(nid,bible)
+            self.db.execute("UPDATE novels SET story_bible_version=? WHERE id=?",(version,nid))
             self.db.execute("UPDATE novels SET current_chapter=MAX(current_chapter,?),updated_at=? WHERE id=?",(number,now(),nid))
