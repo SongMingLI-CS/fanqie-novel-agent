@@ -41,6 +41,7 @@ class NovelService:
                 raw,usage=self.client.complete(system,prompt+'\nThe previous response was invalid JSON. Return the same chapter as one valid JSON object.')
                 output=parse_output(raw)
         except DeepSeekError as exc:
+            self.store.record_usage(job,self.config.model,'novel-writer@1','failed',str(exc))
             self.store.fail_job(job,str(exc),0 if json_failure else self.config.max_job_attempts); return False
         self.store.set_status(job['novel_id'],job['chapter_number'],'REVIEWING'); rules=bible.get('styleRules',{}) if isinstance(bible,dict) else {}; target=rules.get('chapterLength',0) if isinstance(rules,dict) else 0; result=review(output,bible,recent,target if isinstance(target,int) else 0)
         proposed={'currentChapter':job['chapter_number'],'stateChanges':output.get('stateChanges',[]),'events':output.get('eventsIntroduced',[]),'foreshadowingResolved':output.get('foreshadowingResolved',[])}

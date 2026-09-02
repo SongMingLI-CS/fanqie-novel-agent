@@ -156,6 +156,10 @@ class Store:
     def complete_export_job(self, job, path):
         with self.tx(): self.db.execute("UPDATE export_jobs SET status='SUCCEEDED',path=?,updated_at=? WHERE id=?",(str(path),now(),job['id']))
 
+    def record_usage(self, job, model, prompt_version, status, error=''):
+        with self.tx():
+            self.db.execute("INSERT INTO usage VALUES (?,?,?,?,?,?,?,?,?,?)",(str(uuid.uuid4()),job['id'],model,prompt_version,0,0,0,status,error,now()))
+
     def recent(self, nid, limit=3): return self.chapters(nid)[-limit:]
 
     def save_generation(self, job, output, raw, review, usage, proposed):

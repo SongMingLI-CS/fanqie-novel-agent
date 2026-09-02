@@ -64,7 +64,7 @@ class NovelTests(unittest.TestCase):
         raw=json.dumps({'chapterNumber':1,'title':'开端','chapterGoal':'找到线索','summary':'林默发现线索','beats':[{'goal':'调查'}],'content':'第一段。\n\n第二段。','charactersUsed':[],'eventsIntroduced':[],'foreshadowingAdded':[],'foreshadowingResolved':[],'stateChanges':[],'nextChapterHook':'门开了','warnings':[]})
         job,_=self.store.create_job(self.novel['id'],1); service=NovelService(self.store,FakeClient(raw),Config(data_dir=Path(self.tmp.name)),Path(__file__).parents[1]); self.assertTrue(service.process(job)); chapter=self.store.chapter(self.novel['id'],1); self.assertEqual(chapter['status'],'WAITING_APPROVAL'); self.assertEqual(chapter['summary'],'林默发现线索'); self.assertEqual(chapter['beats'][0]['goal'],'调查'); self.assertEqual(self.store.get_novel(self.novel['id'])['current_chapter'],0)
     def test_invalid_model_response_fails(self):
-        job,_=self.store.create_job(self.novel['id'],1); service=NovelService(self.store,FakeClient('not json'),Config(data_dir=Path(self.tmp.name)),Path(__file__).parents[1]); self.assertFalse(service.process(job)); self.assertEqual(self.store.chapter(self.novel['id'],1)['status'],'FAILED')
+        job,_=self.store.create_job(self.novel['id'],1); service=NovelService(self.store,FakeClient('not json'),Config(data_dir=Path(self.tmp.name)),Path(__file__).parents[1]); self.assertFalse(service.process(job)); self.assertEqual(self.store.chapter(self.novel['id'],1)['status'],'FAILED'); self.assertEqual(self.store.usage(self.novel['id'])[0]['request_status'],'failed')
     def test_deepseek_timeout_retries(self):
         class Response:
             def __enter__(self): return self
