@@ -171,7 +171,13 @@ class Store:
     def set_status(self,nid,number,status): self.db.execute("UPDATE chapters SET status=?,updated_at=? WHERE novel_id=? AND number=?",(status,now(),nid,number)); self.db.commit()
     def get_job(self,jid):
         row=self.db.execute("SELECT * FROM jobs WHERE id=?",(jid,)).fetchone(); return dict(row) if row else None
-    def cancel_job(self,jid): self.db.execute("UPDATE jobs SET status='CANCELLED',updated_at=? WHERE id=? AND status IN ('PENDING','RUNNING')",(now(),jid)); self.db.commit()
+    def cancel_job(self,jid):
+        with self.tx():
+            row=self.db.execute("SELECT novel_id,chapter_number FROM jobs WHERE id=? AND status IN ('PENDING','RUNNING')",(jid,)).fetchone()
+            if not row: return False
+            self.db.execute("UPDATE jobs SET status='CANCELLED',locked_until=NULL,updated_at=? WHERE id=?",(now(),jid))
+            self.db.execute("UPDATE chapters SET status='CANCELLED',updated_at=? WHERE novel_id=? AND number=? AND status IN ('PENDING','PLANNING','GENERATING','REVIEWING')",(now(),row['novel_id'],row['chapter_number']))
+            return True
     def fail_job(self, job, error, max_attempts=3):
         current=self.get_job(job['id']) or job
         retry=current['attempts'] < max_attempts; status='PENDING' if retry else 'FAILED'; chapter_status='PENDING' if retry else 'FAILED'

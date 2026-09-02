@@ -33,6 +33,8 @@ class NovelTests(unittest.TestCase):
     def test_paused_novel_rejects_new_job(self):
         self.store.set_paused(self.novel['id'],True)
         with self.assertRaises(ValueError): self.store.create_job(self.novel['id'],1)
+    def test_cancel_job_cancels_chapter_atomically(self):
+        job,_=self.store.create_job(self.novel['id'],1); self.assertTrue(self.store.cancel_job(job['id'])); self.assertEqual(self.store.get_job(job['id'])['status'],'CANCELLED'); self.assertEqual(self.store.chapter(self.novel['id'],1)['status'],'CANCELLED'); self.assertFalse(self.store.cancel_job(job['id']))
     def test_review_blocks_export(self):
         out={'title':'','content':'','chapterGoal':'x'}; result=review(out,self.novel['story_bible'],[]); self.assertFalse(result['passed']); self.assertTrue(result['blockingIssues'])
         with self.assertRaises(ValueError): export_chapter({'number':1,'title':'','content':'','review':result},self.novel,'txt',Path(self.tmp.name))
