@@ -81,5 +81,6 @@ class NovelTests(unittest.TestCase):
             else: os.environ['DEEPSEEK_API_KEY']=old
     def test_api_key_not_in_frontend(self):
         self.assertNotIn('DEEPSEEK_API_KEY',Path(__file__).parents[1].joinpath('static/index.html').read_text())
+        self.assertNotIn('${c.title}',Path(__file__).parents[1].joinpath('static/index.html').read_text())
 
 if __name__=='__main__': unittest.main()
