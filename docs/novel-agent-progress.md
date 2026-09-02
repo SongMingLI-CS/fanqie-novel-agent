@@ -71,9 +71,10 @@
 - 新增持久化 `export_jobs` / `publish_jobs`，导出幂等键和人工发布状态不再只依赖文件或 Chapter 投影。
 - DeepSeek 上下文现在只选取当前章节所需事实并限制在 14,000 字符以内；Reviewer 使用 StoryBible 的 `styleRules.chapterLength` 做长度门禁。
 - 新增真实 HTTP 集成测试，启动项目服务端验证小说创建、章节任务创建和重复请求幂等。
+- Job 取消现在与 Chapter 状态在同一事务中同步为 `CANCELLED`，重复取消返回无变更。
 
 追加验证：
 
-- `make lint && make typecheck && make test && make build`：21/21 测试通过。
+- `make lint && make typecheck && make test && make build`：22/22 测试通过。
 - 并发锁验证：Worker 使用 `BEGIN IMMEDIATE`，每个并发槽使用独立连接；未接入真实 DeepSeek，未伪造外部服务结果。
 - HTTP 冒烟：`GET /` 与 `POST /api/novels` 通过；过程创建的临时 SQLite 已移出仓库。
