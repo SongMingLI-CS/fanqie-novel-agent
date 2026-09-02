@@ -30,6 +30,7 @@ class Handler(BaseHTTPRequestHandler):
             if len(parts)==3 and parts[:2]==['api','jobs']:
                 job=store.get_job(parts[2]); return self.send_json(200,job) if job else self.send_json(404,{'code':'not_found','message':'Job not found','details':{}})
             if len(parts)==4 and parts[:2]==['api','novels'] and parts[3]=='jobs': return self.send_json(200,store.jobs(parts[2]))
+            if len(parts)==4 and parts[:2]==['api','novels'] and parts[3]=='usage': return self.send_json(200,store.usage(parts[2]))
             return self.send_json(404,{'code':'not_found','message':'Route not found','details':{}})
         except Exception: return self.send_json(500,{'code':'internal_error','message':'Request failed','details':{}})
     def do_POST(self):

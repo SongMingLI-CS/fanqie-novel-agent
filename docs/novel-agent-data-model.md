@@ -21,6 +21,7 @@
 | ReviewResult | `chapter_draft_id`, passed, score, issues, warnings, blocking issues, checked_at |
 | PublishJob | `chapter_id`, publisher, status, idempotency key, external id, attempts, error; 发布幂等唯一 |
 | GenerationUsage | `generation_job_id`, model, prompt version, input/output tokens, duration, request status |
+| PublishRecord | `chapter_id`, platform, optional external URL, published time, operator, notes; append-only manual confirmation audit |
 
 ## 状态机
 
@@ -33,6 +34,8 @@
 3. 生成响应先写 `ChapterDraft`，Reviewer 写 `ReviewResult`。
 4. Reviewer 通过后，在一个事务中写入 `proposed_story_state` 并更新关联 StoryBible/Novel 进度；失败回滚，不覆盖原状态。
 5. 发布成功确认、Chapter 状态、PublishJob 和下一章任务必须在一个事务中更新。
+
+`ChapterDraft` 和 `ReviewResult` 在每次生成或编辑时追加版本，当前 Chapter 行只是最新可操作投影；历史响应不会因编辑而覆盖。运行时还提供按小说查询 `GenerationUsage` 的 API，便于观察模型、Token、耗时和错误。
 
 ## 安全与保留
 

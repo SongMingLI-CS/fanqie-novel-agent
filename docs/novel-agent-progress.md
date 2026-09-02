@@ -64,9 +64,10 @@
 - Worker 对网络/服务错误按最大次数重试并进入 `FAILED`；非法 JSON 的修复重试失败会直接进入死信，不重复发布。
 - 控制台已增加 StoryBible 编辑、草稿修改、重新审查、导出和人工发布确认操作。
 - 章节结构现在独立保存 `summary` 与 `beats`，部署/备份/恢复说明见 `docs/novel-agent-deployment.md`。
+- 新增追加式 `chapter_drafts`、`review_results`、`publish_records`，并提供小说级用量查询，保留编辑和人工发布历史。
 
 追加验证：
 
-- `make lint && make typecheck && make test && make build`：14/14 测试通过。
+- `make lint && make typecheck && make test && make build`：15/15 测试通过。
 - 并发锁验证：Worker 使用 `BEGIN IMMEDIATE`，每个并发槽使用独立连接；未接入真实 DeepSeek，未伪造外部服务结果。
 - HTTP 冒烟：`GET /` 与 `POST /api/novels` 通过；过程创建的临时 SQLite 已移出仓库。

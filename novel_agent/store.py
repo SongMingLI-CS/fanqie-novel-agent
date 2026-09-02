@@ -34,6 +34,9 @@ class Store:
         CREATE TABLE IF NOT EXISTS foreshadowing (novel_id TEXT NOT NULL, key TEXT NOT NULL, data TEXT NOT NULL, PRIMARY KEY(novel_id,key));
         CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, novel_id TEXT NOT NULL, chapter_number INTEGER NOT NULL, kind TEXT NOT NULL, status TEXT NOT NULL, idempotency_key TEXT NOT NULL UNIQUE, attempts INTEGER DEFAULT 0, locked_until TEXT, error TEXT DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(novel_id,chapter_number,kind,status));
         CREATE TABLE IF NOT EXISTS usage (id TEXT PRIMARY KEY, job_id TEXT, model TEXT, prompt_version TEXT, input_tokens INTEGER DEFAULT 0, output_tokens INTEGER DEFAULT 0, duration_ms INTEGER DEFAULT 0, request_status TEXT, error TEXT, created_at TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS chapter_drafts (id TEXT PRIMARY KEY, chapter_id TEXT NOT NULL, version INTEGER NOT NULL, payload TEXT NOT NULL, raw_response TEXT DEFAULT '', proposed_state TEXT DEFAULT '{}', created_at TEXT NOT NULL, UNIQUE(chapter_id,version));
+        CREATE TABLE IF NOT EXISTS review_results (id TEXT PRIMARY KEY, draft_id TEXT NOT NULL, payload TEXT NOT NULL, created_at TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS publish_records (id TEXT PRIMARY KEY, chapter_id TEXT NOT NULL, platform TEXT NOT NULL, external_url TEXT DEFAULT '', published_at TEXT NOT NULL, operator TEXT NOT NULL, notes TEXT DEFAULT '', created_at TEXT NOT NULL);
         """)
         self._ensure_column('chapters','beats',"TEXT DEFAULT '[]'")
         self.db.commit()
@@ -134,11 +137,17 @@ class Store:
 
     def jobs(self,nid): return [dict(x) for x in self.db.execute("SELECT * FROM jobs WHERE novel_id=? ORDER BY created_at DESC",(nid,)).fetchall()]
 
+    def usage(self,nid):
+        return [dict(x) for x in self.db.execute("SELECT u.* FROM usage u JOIN jobs j ON j.id=u.job_id WHERE j.novel_id=? ORDER BY u.created_at DESC",(nid,)).fetchall()]
+
     def recent(self, nid, limit=3): return self.chapters(nid)[-limit:]
 
     def save_generation(self, job, output, raw, review, usage, proposed):
         c = self.chapter(job["novel_id"],job["chapter_number"]); ts=now(); status = ChapterStatus.WAITING_APPROVAL if review["passed"] else ChapterStatus.FAILED
         with self.tx():
+            version=int(self.db.execute("SELECT COALESCE(MAX(version),0) FROM chapter_drafts WHERE chapter_id=?",(c['id'],)).fetchone()[0])+1; draft_id=str(uuid.uuid4())
+            self.db.execute("INSERT INTO chapter_drafts VALUES (?,?,?,?,?,?,?)",(draft_id,c['id'],version,dumps(output),raw,dumps(proposed),ts))
+            self.db.execute("INSERT INTO review_results VALUES (?,?,?,?)",(str(uuid.uuid4()),draft_id,dumps(review),ts))
             self.db.execute("UPDATE chapters SET status=?,title=?,goal=?,beats=?,content=?,summary=?,characters=?,events=?,foreshadowing_added=?,foreshadowing_resolved=?,state_changes=?,hook=?,raw_response=?,review=?,proposed_state=?,model=?,generated_at=?,updated_at=? WHERE id=?", (status,output.get("title",""),output.get("chapterGoal",""),dumps(output.get("beats",[])),output.get("content",""),output.get("summary",output.get("chapterGoal","")),dumps(output.get("charactersUsed",[])),dumps(output.get("eventsIntroduced",[])),dumps(output.get("foreshadowingAdded",[])),dumps(output.get("foreshadowingResolved",[])),dumps(output.get("stateChanges",[])),output.get("nextChapterHook",""),raw,dumps(review),dumps(proposed),usage.get("model",""),ts,ts,c["id"]))
             self.db.execute("UPDATE jobs SET status=?,error=?,updated_at=? WHERE id=?", ("SUCCEEDED" if review["passed"] else "FAILED",dumps(review.get("blockingIssues",[])),ts,job["id"]))
             self.db.execute("INSERT INTO usage VALUES (?,?,?,?,?,?,?,?,?,?)", (str(uuid.uuid4()),job["id"],usage.get("model"),usage.get("prompt_version"),usage.get("input_tokens",0),usage.get("output_tokens",0),usage.get("duration_ms",0),usage.get("request_status"),usage.get("error"),ts))
@@ -163,10 +172,14 @@ class Store:
         if not allowed: raise ValueError('no_editable_fields')
         sets=', '.join(f'{k}=?' for k in allowed); values=list(allowed.values())
         with self.tx():
+            version=int(self.db.execute("SELECT COALESCE(MAX(version),0) FROM chapter_drafts WHERE chapter_id=?",(ch['id'],)).fetchone()[0])+1
+            self.db.execute("INSERT INTO chapter_drafts VALUES (?,?,?,?,?,?,?)",(str(uuid.uuid4()),ch['id'],version,dumps({**ch,**allowed}),'', '{}',now()))
             self.db.execute(f"UPDATE chapters SET {sets},status='REVIEWING',review='{{}}',updated_at=? WHERE id=?",(*values,now(),cid))
         return self.chapter_by_id(cid)
     def manual_publish(self,nid,number,record):
         with self.tx():
             changed=self.db.execute("UPDATE chapters SET status=?,publish_record=?,published_at=?,updated_at=? WHERE novel_id=? AND number=? AND status='EXPORTED'",(ChapterStatus.PUBLISHED_MANUALLY,dumps(record),record.get("publishedAt",now()),now(),nid,number)).rowcount
             if not changed: raise ValueError("chapter_must_be_exported_before_manual_publish")
+            ch=self.chapter(nid,number)
+            self.db.execute("INSERT INTO publish_records VALUES (?,?,?,?,?,?,?,?)",(str(uuid.uuid4()),ch['id'],record['platform'],record.get('externalUrl',''),record.get('publishedAt',now()),record['operator'],record.get('notes',''),now()))
             self.db.execute("UPDATE novels SET current_chapter=MAX(current_chapter,?),updated_at=? WHERE id=?",(number,now(),nid))

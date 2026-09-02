@@ -18,6 +18,9 @@ class NovelTests(unittest.TestCase):
         self.assertEqual(self.novel['story_bible']['characters'][0]['name'],'林默'); self.assertEqual(self.store.update_bible(self.novel['id'],{'x':1}),2); self.assertEqual(self.store.get_novel(self.novel['id'])['story_bible'],{'x':1})
         self.assertEqual(self.store.db.execute('SELECT COUNT(*) FROM characters WHERE novel_id=?',(self.novel['id'],)).fetchone()[0],1)
         self.assertEqual(self.store.db.execute('SELECT COUNT(*) FROM foreshadowing WHERE novel_id=?',(self.novel['id'],)).fetchone()[0],1)
+    def test_generation_history_is_append_only(self):
+        raw=json.dumps({'title':'一','chapterGoal':'g','content':'一。\n二。','summary':'s','beats':[]})
+        job,_=self.store.create_job(self.novel['id'],1); service=NovelService(self.store,FakeClient(raw),Config(data_dir=Path(self.tmp.name)),Path(__file__).parents[1]); service.process(job); chapter=self.store.chapter(self.novel['id'],1); self.store.update_draft(chapter['id'],{'content':'编辑后'}); self.assertEqual(self.store.db.execute('SELECT COUNT(*) FROM chapter_drafts WHERE chapter_id=?',(chapter['id'],)).fetchone()[0],2)
     def test_duplicate_chapter_job(self):
         a,created=self.store.create_job(self.novel['id'],1); b,created2=self.store.create_job(self.novel['id'],1); self.assertTrue(created); self.assertFalse(created2); self.assertEqual(a['id'],b['id'])
     def test_failed_job_can_resume(self):
