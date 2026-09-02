@@ -9,6 +9,7 @@ class DeepSeekClient:
 
     def complete(self, system, user):
         if not __import__('os').getenv('DEEPSEEK_API_KEY'): raise DeepSeekError('DEEPSEEK_API_KEY is not configured')
+        if not self.config.base_url: raise DeepSeekError('DEEPSEEK_BASE_URL is not configured')
         body=json.dumps({'model':self.config.model,'messages':[{'role':'system','content':system},{'role':'user','content':user}], 'max_tokens':self.config.max_tokens, 'response_format':{'type':'json_object'}}).encode()
         request=urllib.request.Request(self.config.base_url.rstrip('/')+'/chat/completions',body,{'Authorization':'Bearer '+__import__('os').environ['DEEPSEEK_API_KEY'],'Content-Type':'application/json'})
         started=time.monotonic(); last=None

@@ -77,7 +77,14 @@ class NovelTests(unittest.TestCase):
             return Response()
         old=os.environ.get('DEEPSEEK_API_KEY'); os.environ['DEEPSEEK_API_KEY']='test-only'
         try:
-            c=DeepSeekClient(Config(max_retries=2,timeout=1),opener); text,usage=c.complete('s','u'); self.assertEqual(text,'{}'); self.assertEqual(len(calls),3); self.assertEqual(usage['output_tokens'],4)
+            c=DeepSeekClient(Config(max_retries=2,timeout=1,base_url='https://test.invalid'),opener); text,usage=c.complete('s','u'); self.assertEqual(text,'{}'); self.assertEqual(len(calls),3); self.assertEqual(usage['output_tokens'],4)
+        finally:
+            if old is None: os.environ.pop('DEEPSEEK_API_KEY',None)
+            else: os.environ['DEEPSEEK_API_KEY']=old
+    def test_deepseek_requires_injected_base_url(self):
+        old=os.environ.get('DEEPSEEK_API_KEY'); os.environ['DEEPSEEK_API_KEY']='test-only'
+        try:
+            with self.assertRaisesRegex(Exception,'BASE_URL'): DeepSeekClient(Config(base_url='')).complete('s','u')
         finally:
             if old is None: os.environ.pop('DEEPSEEK_API_KEY',None)
             else: os.environ['DEEPSEEK_API_KEY']=old
