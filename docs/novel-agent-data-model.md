@@ -24,7 +24,7 @@
 
 ## 状态机
 
-章节任务允许：`PENDING -> PLANNING -> GENERATING -> REVIEWING -> DRAFT_READY -> WAITING_APPROVAL -> PUBLISHING -> PUBLISHED`。任何可恢复异常可进入 `FAILED`；用户取消进入 `CANCELLED`。`PUBLISHED` 和 `CANCELLED` 为终态。仅 `DRAFT_READY/WAITING_APPROVAL` 可进入发布前检查，且 `ReviewResult.blocking_issues` 必须为空。
+章节任务允许：`PENDING -> PLANNING -> GENERATING -> REVIEWING -> DRAFT_READY -> WAITING_APPROVAL -> EXPORTED -> PUBLISHED_MANUALLY`。任何可恢复异常可进入 `FAILED`；用户取消进入 `CANCELLED`。`PUBLISHED_MANUALLY` 和 `CANCELLED` 为终态。仅 `DRAFT_READY/WAITING_APPROVAL` 可进入导出前检查，且 `ReviewResult.passed=true`、`blocking_issues` 必须为空。
 
 ## 事务边界
 
