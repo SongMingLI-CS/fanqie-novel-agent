@@ -6,6 +6,7 @@ from .store import Store
 from .service import NovelService
 from .deepseek import DeepSeekClient
 from .exporters import export_chapter
+from .auth import authorize
 
 ROOT=__import__('pathlib').Path(__file__).parents[1]
 config=Config(); store=Store(config.data_dir/'novel.sqlite3'); service=NovelService(store,DeepSeekClient(config),config,ROOT)
@@ -17,6 +18,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         p=urlparse(self.path).path; parts=p.strip('/').split('/')
         try:
+            if p.startswith('/api/') and not authorize(self,config): return self.send_json(401,{'code':'unauthorized','message':'Authentication required','details':{}})
             if p=='/':
                 body=(ROOT/'static/index.html').read_bytes(); self.send_response(200); self.send_header('Content-Type','text/html; charset=utf-8'); self.send_header('Content-Length',str(len(body))); self.end_headers(); self.wfile.write(body); return
             if p=='/api/novels': return self.send_json(200,[dict(x) for x in store.db.execute('SELECT * FROM novels ORDER BY updated_at DESC')])
@@ -29,6 +31,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         p=urlparse(self.path).path; parts=p.strip('/').split('/'); data=self.body()
         try:
+            if p.startswith('/api/') and not authorize(self,config): return self.send_json(401,{'code':'unauthorized','message':'Authentication required','details':{}})
             if p=='/api/novels': return self.send_json(201,store.create_novel(data.get('title','Untitled'),data.get('storyBible',{}),data.get('genre',''),data.get('volume','')))
             if len(parts)==5 and parts[:2]==['api','novels'] and parts[3]=='chapters' and parts[4]=='generate':
                 job,created=store.create_job(parts[2],int(data.get('chapterNumber') or store.get_novel(parts[2])['current_chapter']+1)); return self.send_json(202 if created else 200,job)
@@ -57,6 +60,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_PATCH(self):
         p=urlparse(self.path).path; parts=p.strip('/').split('/'); data=self.body()
         try:
+            if p.startswith('/api/') and not authorize(self,config): return self.send_json(401,{'code':'unauthorized','message':'Authentication required','details':{}})
             if len(parts)==4 and parts[:2]==['api','novels'] and parts[3]=='story-bible':
                 version=store.update_bible(parts[2],data.get('storyBible',data)); return self.send_json(200,{'version':version,'novel':store.get_novel(parts[2])})
             return self.send_json(404,{'code':'not_found','message':'Route not found','details':{}})

@@ -6,7 +6,7 @@ from .deepseek import DeepSeekClient
 
 
 def run_once(store, service):
-    job=store.claim_job()
+    job=store.claim_job(service.config.job_timeout)
     return service.process(job) if job else None
 
 
@@ -15,7 +15,9 @@ def main():
     # The daemon is long-running, but it only processes explicitly-created jobs;
     # it never creates an unbounded chain of chapters by itself.
     while True:
-        run_once(store,service); time.sleep(1)
+        result=run_once(store,service)
+        if config.worker_once or result is None and config.worker_once: break
+        time.sleep(1)
 
 
 if __name__=='__main__': main()

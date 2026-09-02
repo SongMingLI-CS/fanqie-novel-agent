@@ -5,6 +5,7 @@ from novel_agent.exporters import export_chapter
 from novel_agent.reviewer import review
 from novel_agent.service import NovelService
 from novel_agent.config import Config
+from novel_agent.deepseek import DeepSeekClient
 
 class FakeClient:
     def __init__(self,text): self.text=text
@@ -33,5 +34,23 @@ class NovelTests(unittest.TestCase):
         job,_=self.store.create_job(self.novel['id'],1); service=NovelService(self.store,FakeClient(raw),Config(data_dir=Path(self.tmp.name)),Path(__file__).parents[1]); self.assertTrue(service.process(job)); self.assertEqual(self.store.chapter(self.novel['id'],1)['status'],'WAITING_APPROVAL'); self.assertEqual(self.store.get_novel(self.novel['id'])['current_chapter'],0)
     def test_invalid_model_response_fails(self):
         job,_=self.store.create_job(self.novel['id'],1); service=NovelService(self.store,FakeClient('not json'),Config(data_dir=Path(self.tmp.name)),Path(__file__).parents[1]); self.assertFalse(service.process(job)); self.assertEqual(self.store.chapter(self.novel['id'],1)['status'],'FAILED')
+    def test_deepseek_timeout_retries(self):
+        class Response:
+            def __enter__(self): return self
+            def __exit__(self,*args): pass
+            def read(self): return b'{"choices":[{"message":{"content":"{}"}}],"usage":{"prompt_tokens":3,"completion_tokens":4}}'
+        calls=[]
+        def opener(*args,**kwargs):
+            calls.append(1)
+            if len(calls)<3: raise TimeoutError('timeout')
+            return Response()
+        old=os.environ.get('DEEPSEEK_API_KEY'); os.environ['DEEPSEEK_API_KEY']='test-only'
+        try:
+            c=DeepSeekClient(Config(max_retries=2,timeout=1),opener); text,usage=c.complete('s','u'); self.assertEqual(text,'{}'); self.assertEqual(len(calls),3); self.assertEqual(usage['output_tokens'],4)
+        finally:
+            if old is None: os.environ.pop('DEEPSEEK_API_KEY',None)
+            else: os.environ['DEEPSEEK_API_KEY']=old
+    def test_api_key_not_in_frontend(self):
+        self.assertNotIn('DEEPSEEK_API_KEY',Path(__file__).parents[1].joinpath('static/index.html').read_text())
 
 if __name__=='__main__': unittest.main()

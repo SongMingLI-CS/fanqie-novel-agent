@@ -21,6 +21,6 @@ description: 按持久化剧情圣经、风格规则和章节模板规划、生�
 
 ## 状态与安全
 
-章节状态为 `PENDING`, `PLANNING`, `GENERATING`, `REVIEWING`, `DRAFT_READY`, `WAITING_APPROVAL`, `PUBLISHING`, `PUBLISHED`, `FAILED`, `CANCELLED`。审查有阻断问题不得发布；默认需要人工批准。API key 只由服务端环境变量读取。
+章节状态为 `PENDING`, `PLANNING`, `GENERATING`, `REVIEWING`, `DRAFT_READY`, `WAITING_APPROVAL`, `EXPORTED`, `PUBLISHED_MANUALLY`, `FAILED`, `CANCELLED`。审查有阻断问题不得导出；默认需要人工批准。API key 只由服务端环境变量读取。
 
 详细事实、风格、模板和审查门槛见 references；修改用户剧情事实时必须先产生新版本并保留旧版本。

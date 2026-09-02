@@ -4,8 +4,8 @@
 
 - 分支：`codex/novel-agent`
 - 开始日期：2026-09-02
-- 当前阶段：Phase 2-10 实现中
-- 最近提交：d78416f
+- 当前阶段：Phase 2-10 基础实现完成
+- 最近提交：待提交
 
 ## Phase 1：审计、Skill 和剧情状态模型
 
@@ -50,4 +50,11 @@
 
 - 本仓库没有既有 lint/typecheck/build 工具，Makefile 以 Python 编译检查和 diff 检查作为可重复基线；未伪造 TypeScript 或前端 production build 结果。
 - DOCX 不实现（审计发现无既有文档能力）；可未来增加明确适配器。
-- 外部身份认证、SQLite 多实例行锁、任务超时/最大并发配置和复杂前端编辑器仍是生产增强项；当前默认单机 Worker，半自动流程不自动创建无限章节。
+- `NOVEL_AUTH_TOKEN` 已提供 Bearer 身份验证开关；未配置时仅适用于受保护的本机开发环境。
+- 当前 Worker 是单进程单并发；租约、超时恢复和 `NOVEL_JOB_TIMEOUT` 已实现，横向多实例和更高并发仍需生产数据库/队列增强。
+- 控制台已覆盖小说、章节、生成和暂停/继续的最小操作；富文本编辑、逐字段 StoryBible 编辑和更完整的审核视图仍是后续增强项。
+
+追加验证：
+
+- `make lint && make typecheck && make test && make build`：10/10 测试通过。
+- HTTP 冒烟：`GET /` 与 `POST /api/novels` 通过；过程创建的临时 SQLite 已移出仓库。
