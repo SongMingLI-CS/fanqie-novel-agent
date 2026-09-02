@@ -1,4 +1,4 @@
-import json, os, tempfile, unittest
+import json, os, tempfile, unittest, subprocess, time, urllib.request
 from pathlib import Path
 from novel_agent.store import Store
 from novel_agent.exporters import export_chapter
@@ -82,5 +82,18 @@ class NovelTests(unittest.TestCase):
     def test_api_key_not_in_frontend(self):
         self.assertNotIn('DEEPSEEK_API_KEY',Path(__file__).parents[1].joinpath('static/index.html').read_text())
         self.assertNotIn('${c.title}',Path(__file__).parents[1].joinpath('static/index.html').read_text())
+
+    def test_http_create_and_idempotent_job(self):
+        root=Path(__file__).parents[1]; env=os.environ.copy(); env['NOVEL_DATA_DIR']=self.tmp.name; env.pop('DEEPSEEK_API_KEY',None)
+        proc=subprocess.Popen(['python3','-m','novel_agent.server'],cwd=root,env=env,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+        try:
+            for _ in range(30):
+                try: urllib.request.urlopen('http://127.0.0.1:8787/',timeout=.2); break
+                except Exception: time.sleep(.05)
+            def call(url,data=None):
+                body=None if data is None else json.dumps(data).encode(); req=urllib.request.Request(url,body,{'Content-Type':'application/json'} if body else {}); return json.loads(urllib.request.urlopen(req,timeout=2).read())
+            novel=call('http://127.0.0.1:8787/api/novels',{'title':'HTTP测试'}); a=call(f"http://127.0.0.1:8787/api/novels/{novel['id']}/chapters/generate",{}); b=call(f"http://127.0.0.1:8787/api/novels/{novel['id']}/chapters/generate",{}); self.assertEqual(a['id'],b['id'])
+        finally:
+            proc.terminate(); proc.wait(timeout=3)
 
 if __name__=='__main__': unittest.main()
