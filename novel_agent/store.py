@@ -32,7 +32,7 @@ class Store:
         CREATE TABLE IF NOT EXISTS world_rules (novel_id TEXT NOT NULL, key TEXT NOT NULL, data TEXT NOT NULL, PRIMARY KEY(novel_id,key));
         CREATE TABLE IF NOT EXISTS timeline_events (novel_id TEXT NOT NULL, key TEXT NOT NULL, data TEXT NOT NULL, PRIMARY KEY(novel_id,key));
         CREATE TABLE IF NOT EXISTS foreshadowing (novel_id TEXT NOT NULL, key TEXT NOT NULL, data TEXT NOT NULL, PRIMARY KEY(novel_id,key));
-        CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, novel_id TEXT NOT NULL, chapter_number INTEGER NOT NULL, kind TEXT NOT NULL, status TEXT NOT NULL, idempotency_key TEXT NOT NULL UNIQUE, attempts INTEGER DEFAULT 0, locked_until TEXT, error TEXT DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(novel_id,chapter_number,kind,status));
+        CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, novel_id TEXT NOT NULL, chapter_number INTEGER NOT NULL, kind TEXT NOT NULL, status TEXT NOT NULL, idempotency_key TEXT NOT NULL UNIQUE, attempts INTEGER DEFAULT 0, locked_until TEXT, next_attempt_at TEXT, error TEXT DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(novel_id,chapter_number,kind,status));
         CREATE TABLE IF NOT EXISTS usage (id TEXT PRIMARY KEY, job_id TEXT, model TEXT, prompt_version TEXT, input_tokens INTEGER DEFAULT 0, output_tokens INTEGER DEFAULT 0, duration_ms INTEGER DEFAULT 0, request_status TEXT, error TEXT, created_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS chapter_drafts (id TEXT PRIMARY KEY, chapter_id TEXT NOT NULL, version INTEGER NOT NULL, payload TEXT NOT NULL, raw_response TEXT DEFAULT '', proposed_state TEXT DEFAULT '{}', created_at TEXT NOT NULL, UNIQUE(chapter_id,version));
         CREATE TABLE IF NOT EXISTS review_results (id TEXT PRIMARY KEY, draft_id TEXT NOT NULL, payload TEXT NOT NULL, created_at TEXT NOT NULL);
@@ -41,6 +41,7 @@ class Store:
         CREATE TABLE IF NOT EXISTS publish_jobs (id TEXT PRIMARY KEY, chapter_id TEXT NOT NULL, status TEXT NOT NULL, idempotency_key TEXT NOT NULL UNIQUE, platform TEXT DEFAULT '', external_url TEXT DEFAULT '', error TEXT DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
         """)
         self._ensure_column('chapters','beats',"TEXT DEFAULT '[]'")
+        self._ensure_column('jobs','next_attempt_at',"TEXT")
         self.db.commit()
 
     def close(self):
@@ -104,7 +105,7 @@ class Store:
             return dict(self.db.execute("SELECT * FROM jobs WHERE id=?", (existing['id'],)).fetchone()), True
         jid = str(uuid.uuid4()); ts = now()
         with self.tx():
-            self.db.execute("INSERT INTO jobs VALUES (?,?,?,?,?,?,?,?,?,?,?)", (jid,nid,number,kind,"PENDING",key,0,None,"",ts,ts))
+            self.db.execute("INSERT INTO jobs VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", (jid,nid,number,kind,"PENDING",key,0,None,ts,"",ts,ts))
             self.db.execute("INSERT OR IGNORE INTO chapters(id,novel_id,number,status,created_at,updated_at) VALUES (?,?,?,?,?,?)", (str(uuid.uuid4()),nid,number,ChapterStatus.PENDING,ts,ts))
         return dict(self.db.execute("SELECT * FROM jobs WHERE id=?", (jid,)).fetchone()), True
 
@@ -112,7 +113,7 @@ class Store:
         try:
             self.db.execute('BEGIN IMMEDIATE')
             self.db.execute("UPDATE jobs SET status='PENDING',locked_until=NULL WHERE status='RUNNING' AND locked_until < ?", (now(),))
-            row = self.db.execute("SELECT * FROM jobs WHERE status='PENDING' ORDER BY created_at LIMIT 1").fetchone()
+            row = self.db.execute("SELECT * FROM jobs WHERE status='PENDING' AND (next_attempt_at IS NULL OR next_attempt_at<=?) ORDER BY created_at LIMIT 1",(now(),)).fetchone()
             if not row:
                 self.db.commit(); return None
             lease=(datetime.now(timezone.utc)+timedelta(seconds=lease_seconds)).isoformat()
@@ -184,9 +185,9 @@ class Store:
             return True
     def fail_job(self, job, error, max_attempts=3):
         current=self.get_job(job['id']) or job
-        retry=current['attempts'] < max_attempts; status='PENDING' if retry else 'FAILED'; chapter_status='PENDING' if retry else 'FAILED'
+        retry=current['attempts'] < max_attempts; status='PENDING' if retry else 'FAILED'; chapter_status='PENDING' if retry else 'FAILED'; retry_at=(datetime.now(timezone.utc)+timedelta(seconds=min(60,2**current['attempts']))).isoformat() if retry else None
         with self.tx():
-            self.db.execute("UPDATE jobs SET status=?,error=?,locked_until=NULL,updated_at=? WHERE id=?",(status,error,now(),job['id']))
+            self.db.execute("UPDATE jobs SET status=?,error=?,locked_until=NULL,next_attempt_at=?,updated_at=? WHERE id=?",(status,error,retry_at,now(),job['id']))
             self.db.execute("UPDATE chapters SET status=?,updated_at=? WHERE novel_id=? AND number=?",(chapter_status,now(),job['novel_id'],job['chapter_number']))
         return retry
     def set_paused(self,nid,paused): self.db.execute("UPDATE novels SET paused=?,updated_at=? WHERE id=?",(int(paused),now(),nid)); self.db.commit()

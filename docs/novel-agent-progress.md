@@ -73,6 +73,7 @@
 - 发布适配器对缺省元数据安全降级，避免导出接口因可选摘要字段缺失而异常。
 - DeepSeek Base URL 不再硬编码；未注入地址或 API Key 时显式安全失败。
 - DeepSeek 失败请求现在也写入 `GenerationUsage`，保留模型、Prompt 版本、失败状态和安全错误信息。
+- Job 失败重试现在持久化 `next_attempt_at`，使用有限指数退避，服务重启不会立即重复请求。
 - DeepSeek 上下文现在只选取当前章节所需事实并限制在 14,000 字符以内；Reviewer 使用 StoryBible 的 `styleRules.chapterLength` 做长度门禁。
 - 新增真实 HTTP 集成测试，启动项目服务端验证小说创建、章节任务创建和重复请求幂等。
 - Job 取消现在与 Chapter 状态在同一事务中同步为 `CANCELLED`，重复取消返回无变更。
