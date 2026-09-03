@@ -81,7 +81,7 @@
 
 ## 2026-09-03：DeepSeek V4 真实调用排障
 
-状态：网络与模型配置根因已定位，等待同一 Job 的真实章节恢复验收。
+状态：完成，原 Job 已真实恢复并生成第 1 章待审草稿。
 
 - 当前真实 Novel `75747e6b-1c90-4d47-b39a-a4e856f8cd62` 的 StoryBible 保持版本 1；第 1 章正文、草稿、导出和发布记录均为空。
 - 当前真实 Job `4cb25ce0-b033-44a1-a08c-c1de8efbe7ae` 唯一存在，可原地恢复；没有重复幂等键。
@@ -91,6 +91,10 @@
 - 客户端现已逐行缓冲 SSE；仅收到 `[DONE]` 后返回完整 `message.content`。中断、首字节超时、流读取超时或整体超时时丢弃内存缓冲，不写正式 Chapter。
 - 新增 DNS、TCP、TLS、HTTP 400/401/429、连接/首字节/流读取/整体超时、完整流、日志脱敏和失败不污染数据库测试。
 - `.env`、`.env.local`、`.DS_Store` 和运行数据库均排除在版本控制之外。
+- 原 Job `4cb25ce0-b033-44a1-a08c-c1de8efbe7ae` 原地恢复成功，数据库中仍只有一个第 1 章生成 Job。
+- 真实调用模型 `deepseek-v4-flash`，thinking 关闭，HTTP 200；耗时 23,421ms，输入 1,652 Token，输出 2,337 Token。
+- 第 1 章《天道有Bug》保存为 `WAITING_APPROVAL`，正文 2,277 字符；自动审查通过，得分 100，无 blocking issue。
+- StoryBible 仍为版本 1、Novel 当前正式章节仍为 0；候选剧情状态未正式提交。导出、发布 Job 和人工发布记录均为 0。
 
 验证：`make lint && make typecheck && make test && make build`，40/40 测试通过。
 

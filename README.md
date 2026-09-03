@@ -5,6 +5,9 @@
 ## 运行
 
 ```bash
+set -a
+source .env
+set +a
 python3 -m novel_agent.server
 # 另一个终端启动可恢复 Worker
 python3 -m novel_agent.worker
