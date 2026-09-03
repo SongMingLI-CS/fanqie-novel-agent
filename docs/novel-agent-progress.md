@@ -79,6 +79,21 @@
 - 新增真实 HTTP 集成测试，启动项目服务端验证小说创建、章节任务创建和重复请求幂等。
 - Job 取消现在与 Chapter 状态在同一事务中同步为 `CANCELLED`，重复取消返回无变更。
 
+## 2026-09-03：DeepSeek V4 真实调用排障
+
+状态：网络与模型配置根因已定位，等待同一 Job 的真实章节恢复验收。
+
+- 当前真实 Novel `75747e6b-1c90-4d47-b39a-a4e856f8cd62` 的 StoryBible 保持版本 1；第 1 章正文、草稿、导出和发布记录均为空。
+- 当前真实 Job `4cb25ce0-b033-44a1-a08c-c1de8efbe7ae` 唯一存在，可原地恢复；没有重复幂等键。
+- 最小认证请求在 Worker 相同 Python/CA 环境中返回 HTTP 200，Base URL 为 `https://api.deepseek.com`，模型为 `deepseek-v4-flash`。
+- 根因一：旧流式实现最终调用 `response.read()`，未逐事件消费 SSE，无法准确区分首字节、流读取与整体超时。
+- 根因二：V4 Flash 默认 thinking；低输出预算可被 reasoning 消耗，导致 `message.content` 为空。结构化章节默认关闭 thinking，并保留环境变量开关。
+- 客户端现已逐行缓冲 SSE；仅收到 `[DONE]` 后返回完整 `message.content`。中断、首字节超时、流读取超时或整体超时时丢弃内存缓冲，不写正式 Chapter。
+- 新增 DNS、TCP、TLS、HTTP 400/401/429、连接/首字节/流读取/整体超时、完整流、日志脱敏和失败不污染数据库测试。
+- `.env`、`.env.local`、`.DS_Store` 和运行数据库均排除在版本控制之外。
+
+验证：`make lint && make typecheck && make test && make build`，40/40 测试通过。
+
 追加验证：
 
 - `make lint && make typecheck && make test && make build`：25/25 测试通过。

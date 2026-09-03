@@ -1,4 +1,5 @@
-import json, os, tempfile, unittest, subprocess, time, urllib.request
+import json, os, socket, ssl, tempfile, unittest, subprocess, time, urllib.request
+from unittest.mock import patch
 from pathlib import Path
 from novel_agent.store import Store
 from novel_agent.exporters import export_chapter
@@ -86,7 +87,7 @@ class NovelTests(unittest.TestCase):
             def read(self): return json.dumps({'choices':[{'message':{'reasoning_content':'not json','content':'answer'}}]}).encode()
         old=os.environ.get('DEEPSEEK_API_KEY'); os.environ['DEEPSEEK_API_KEY']='test-only'
         try:
-            text,_=DeepSeekClient(Config(max_retries=0,base_url='https://test.invalid'),lambda *a,**k: Response()).complete('s','u'); self.assertEqual(text,'answer')
+            text,_=DeepSeekClient(Config(max_retries=0,base_url='https://test.invalid',model='test-model'),lambda *a,**k: Response()).complete('s','u'); self.assertEqual(text,'answer')
         finally:
             if old is None: os.environ.pop('DEEPSEEK_API_KEY',None)
             else: os.environ['DEEPSEEK_API_KEY']=old
@@ -112,7 +113,7 @@ class NovelTests(unittest.TestCase):
             return Response()
         old=os.environ.get('DEEPSEEK_API_KEY'); os.environ['DEEPSEEK_API_KEY']='test-only'
         try:
-            c=DeepSeekClient(Config(max_retries=2,timeout=1,base_url='https://test.invalid',ca_bundle='/etc/ssl/cert.pem'),opener); text,usage=c.complete('s','u'); self.assertEqual(text,'{}'); self.assertEqual(len(calls),3); self.assertEqual(usage['output_tokens'],4)
+            c=DeepSeekClient(Config(max_retries=2,timeout=180,base_url='https://test.invalid',model='test-model',ca_bundle='/etc/ssl/cert.pem'),opener); text,usage=c.complete('s','u'); self.assertEqual(text,'{}'); self.assertEqual(len(calls),3); self.assertEqual(usage['output_tokens'],4)
         finally:
             if old is None: os.environ.pop('DEEPSEEK_API_KEY',None)
             else: os.environ['DEEPSEEK_API_KEY']=old
@@ -128,9 +129,9 @@ class NovelTests(unittest.TestCase):
             calls.append((json.loads(request.data),timeout)); return Response()
         old=os.environ.get('DEEPSEEK_API_KEY'); os.environ['DEEPSEEK_API_KEY']='test-only'
         try:
-            config=Config(max_retries=0,timeout=180,connect_timeout=10,base_url='https://test.invalid')
+            config=Config(max_retries=0,timeout=180,connect_timeout=10,base_url='https://test.invalid',model='test-model')
             text,usage=DeepSeekClient(config,opener).complete('s','u')
-            self.assertEqual(json.loads(text)['chapterNumber'],1); self.assertEqual(calls[0][0]['stream'],True); self.assertEqual(calls[0][0]['response_format'],{'type':'json_object'}); self.assertEqual(calls[0][1],180); self.assertEqual(usage['output_tokens'],6)
+            self.assertEqual(json.loads(text)['chapterNumber'],1); self.assertEqual(calls[0][0]['stream'],True); self.assertEqual(calls[0][0]['stream_options'],{'include_usage':True}); self.assertEqual(calls[0][0]['response_format'],{'type':'json_object'}); self.assertEqual(calls[0][0]['thinking'],{'type':'disabled'}); self.assertEqual(calls[0][1],180); self.assertEqual(usage['output_tokens'],6)
         finally:
             if old is None: os.environ.pop('DEEPSEEK_API_KEY',None)
             else: os.environ['DEEPSEEK_API_KEY']=old

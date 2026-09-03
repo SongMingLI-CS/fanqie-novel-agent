@@ -13,6 +13,8 @@ python3 -m novel_agent.worker
 
 DeepSeek 请求使用流式响应；连接超时默认为 10 秒，整体请求超时默认为 180 秒，最多重试 2 次。可通过 `DEEPSEEK_CONNECT_TIMEOUT`、`NOVEL_REQUEST_TIMEOUT` 和 `NOVEL_MAX_RETRIES` 调整。日志只记录脱敏的 DNS/TLS/HTTP 状态、阶段和耗时，不记录请求体或密钥。
 
+模型只从 `DEEPSEEK_MODEL` 读取。当前验证配置为 `deepseek-v4-flash`；结构化长文本默认设置 `DEEPSEEK_THINKING=disabled`，避免推理 Token 挤占 JSON 正文预算。需要推理模式时可显式设置 `enabled`，并通过 `DEEPSEEK_REASONING_EFFORT=low|high|max` 调整，但上线前必须重新执行最小认证和长文本流测试。
+
 ## 数据与备份
 
 `NOVEL_DATA_DIR` 下的 `novel.sqlite3` 是持久化状态，`exports/` 是导出稿。备份前暂停 Worker，然后复制 SQLite 文件；启用 WAL 时需同时复制 `novel.sqlite3-wal` 与 `novel.sqlite3-shm`，或使用 SQLite 在线备份工具。恢复时停止服务，恢复同一目录，再启动服务和 Worker。不得删除旧的 StoryBible 版本或发布记录。
