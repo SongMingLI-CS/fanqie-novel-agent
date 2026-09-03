@@ -1,7 +1,11 @@
 import json
+import logging
 from pathlib import Path
 from .deepseek import DeepSeekError, parse_output, response_summary, validate_chapter_output
+from .exporters import export_chapter
 from .reviewer import review
+
+logger=logging.getLogger(__name__)
 
 
 class NovelService:
@@ -49,4 +53,12 @@ class NovelService:
             self.store.fail_job(job,detail,0 if json_failure else self.config.max_job_attempts); return False
         self.store.set_status(job['novel_id'],job['chapter_number'],'REVIEWING'); rules=bible.get('styleRules',{}) if isinstance(bible,dict) else {}; target=rules.get('chapterLength',0) if isinstance(rules,dict) else 0; result=review(output,bible,recent,target if isinstance(target,int) else 0)
         proposed={'currentChapter':job['chapter_number'],'stateChanges':output.get('stateChanges',[]),'events':output.get('eventsIntroduced',[]),'foreshadowingResolved':output.get('foreshadowingResolved',[])}
-        self.store.save_generation(job,output,raw,result,usage,proposed); return result['passed']
+        self.store.save_generation(job,output,raw,result,usage,proposed)
+        if result['passed'] and self.config.auto_export_txt:
+            chapter=self.store.chapter(job['novel_id'],job['chapter_number'])
+            try:
+                path=export_chapter(chapter,novel,'txt',self.config.data_dir/'exports')
+                logger.info('automatic draft txt exported chapter=%s path=%s',job['chapter_number'],path)
+            except OSError as exc:
+                logger.warning('automatic draft txt export failed chapter=%s error=%s',job['chapter_number'],type(exc).__name__)
+        return result['passed']

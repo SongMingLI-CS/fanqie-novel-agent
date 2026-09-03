@@ -98,6 +98,17 @@
 
 验证：`make lint && make typecheck && make test && make build`，40/40 测试通过。
 
+## 2026-09-03：审查通过后自动导出 TXT 草稿
+
+状态：完成。
+
+- 增加 `NOVEL_AUTO_EXPORT_TXT`，默认开启；完整生成且自动审查通过后写入稳定命名的 TXT。
+- 自动 TXT 使用临时文件加原子替换，进程中断不会留下半截正式文件。
+- 自动草稿导出不创建可发布的 ExportJob，不改变 `WAITING_APPROVAL`，不更新 StoryBible，也不触发发布。
+- 生成失败或审查阻断时不产生 TXT。
+- 已将真实第 1 章导出到 `data/exports/75747e6b-1c90-4d47-b39a-a4e856f8cd62-1.txt`；章节仍为 `WAITING_APPROVAL`，StoryBible 仍为版本 1。
+- `make lint && make typecheck && make test && make build`：40/40 测试通过。
+
 追加验证：
 
 - `make lint && make typecheck && make test && make build`：25/25 测试通过。

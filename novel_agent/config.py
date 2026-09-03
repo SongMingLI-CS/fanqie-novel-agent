@@ -22,3 +22,4 @@ class Config:
     auth_token: str = os.getenv("NOVEL_AUTH_TOKEN", "")
     publish_enabled: bool = os.getenv("NOVEL_PUBLISH_ENABLED", "false").lower() == "true"
     require_review: bool = os.getenv("NOVEL_REQUIRE_REVIEW", "true").lower() == "true"
+    auto_export_txt: bool = os.getenv("NOVEL_AUTO_EXPORT_TXT", "true").lower() == "true"

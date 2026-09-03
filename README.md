@@ -17,6 +17,8 @@ python3 -m novel_agent.worker
 
 完整配置见 `.env.example`；`DEEPSEEK_BASE_URL` 和 `DEEPSEEK_API_KEY` 必须由部署环境注入，代码不内置供应商地址或密钥。缺少配置时服务不会伪造模型结果，生成任务会安全失败并记录配置错误。发布是半自动的：审查通过后导出 TXT/Markdown/JSON，用户在目标平台手动发布，再回系统确认；没有番茄自动点击、登录或验证码绕过。
 
+默认启用 `NOVEL_AUTO_EXPORT_TXT=true`：章节完整生成并通过自动审查后，会同步写入 `data/exports/<novel-id>-<chapter-number>.txt`。该文件是待审核草稿，不会把章节改成已发布或正式导出状态；人工发布流程保持不变。
+
 DOCX 未实现，因为审计发现项目原本没有文档生成能力；可在未来加入独立适配器，不影响现有导出格式。
 
 ## 验证

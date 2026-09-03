@@ -1,4 +1,6 @@
 import json
+import os
+import uuid
 from pathlib import Path
 
 
@@ -10,4 +12,11 @@ def export_chapter(chapter, novel, fmt, directory):
     if fmt=='json': body=json.dumps(meta,ensure_ascii=False,indent=2)
     elif fmt=='md': body=f"# {novel['title']}\n\n## {chapter['number']}. {chapter['title']}\n\n{chapter['content']}\n"
     else: body=f"{novel['title']}\n{novel.get('volume','')} 第{chapter['number']}章 {chapter['title']}\n\n{chapter['content']}\n"
-    path=directory/f"{novel['id']}-{chapter['number']}.{fmt}"; path.write_text(body,encoding='utf-8'); return path
+    path=directory/f"{novel['id']}-{chapter['number']}.{fmt}"
+    temporary=directory/f".{path.name}.{uuid.uuid4().hex}.tmp"
+    try:
+        temporary.write_text(body,encoding='utf-8')
+        os.replace(temporary,path)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return path
