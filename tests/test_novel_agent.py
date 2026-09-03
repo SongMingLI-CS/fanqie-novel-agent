@@ -2,7 +2,7 @@ import json, os, socket, ssl, tempfile, unittest, subprocess, time, urllib.reque
 from unittest.mock import patch
 from pathlib import Path
 from novel_agent.store import Store
-from novel_agent.exporters import export_chapter
+from novel_agent.exporters import export_chapter, export_filename
 from novel_agent.reviewer import review
 from novel_agent.service import NovelService
 from novel_agent.config import Config
@@ -51,6 +51,10 @@ class NovelTests(unittest.TestCase):
         ch={'number':1,'title':'开端','content':'正文','summary':'目标','characters':[],'events':[],'foreshadowing_added':[],'foreshadowing_resolved':[],'review':{'passed':True},'model':'test','generated_at':'now'}
         for fmt in ('txt','md','json'):
             p=export_chapter(ch,self.novel,fmt,Path(self.tmp.name)); self.assertTrue(p.exists()); self.assertIn('正文',p.read_text()); self.assertFalse(list(Path(self.tmp.name).glob('*.tmp')))
+    def test_export_filename_is_readable_and_path_safe(self):
+        name=export_filename({'number':7,'title':'开端/转折:*?'},{'title':'测试<小说>','volume':'卷一：启程'},'txt')
+        self.assertEqual(name,'测试_小说_卷一_启程_第0007章_开端_转折.txt')
+        self.assertNotIn('/',name); self.assertNotIn('..',name)
     def test_manual_publish(self):
         self.store.create_job(self.novel['id'],1)
         with self.assertRaises(ValueError): self.store.manual_publish(self.novel['id'],1,{'platform':'Fanqie','operator':'u'})
@@ -72,7 +76,7 @@ class NovelTests(unittest.TestCase):
     def test_generation_structured_response(self):
         raw=json.dumps({'chapterNumber':1,'title':'开端','chapterGoal':'找到线索','summary':'林默发现线索','beats':[{'goal':'调查'}],'content':'第一段。\n\n第二段。','charactersUsed':[],'eventsIntroduced':[],'foreshadowingAdded':[],'foreshadowingResolved':[],'stateChanges':[],'nextChapterHook':'门开了','warnings':[]})
         job,_=self.store.create_job(self.novel['id'],1); service=NovelService(self.store,FakeClient(raw),Config(data_dir=Path(self.tmp.name)),Path(__file__).parents[1]); self.assertTrue(service.process(job)); chapter=self.store.chapter(self.novel['id'],1); self.assertEqual(chapter['status'],'WAITING_APPROVAL'); self.assertEqual(chapter['summary'],'林默发现线索'); self.assertEqual(chapter['beats'][0]['goal'],'调查'); self.assertEqual(self.store.get_novel(self.novel['id'])['current_chapter'],0)
-        exported=Path(self.tmp.name)/'exports'/f"{self.novel['id']}-1.txt"; self.assertTrue(exported.exists()); self.assertIn('第一段。',exported.read_text()); self.assertNotIn('blockingIssues',exported.read_text()); self.assertIsNone(self.store.export_job(chapter,'txt'))
+        exported=Path(self.tmp.name)/'exports'/'测试小说_第0001章_开端.txt'; self.assertTrue(exported.exists()); self.assertIn('第一段。',exported.read_text()); self.assertNotIn('blockingIssues',exported.read_text()); self.assertIsNone(self.store.export_job(chapter,'txt'))
     def test_invalid_model_response_fails(self):
         job,_=self.store.create_job(self.novel['id'],1); service=NovelService(self.store,FakeClient('not json'),Config(data_dir=Path(self.tmp.name)),Path(__file__).parents[1]); self.assertFalse(service.process(job)); self.assertEqual(self.store.chapter(self.novel['id'],1)['status'],'FAILED'); self.assertEqual(self.store.usage(self.novel['id'])[0]['request_status'],'failed'); self.assertFalse((Path(self.tmp.name)/'exports').exists())
 

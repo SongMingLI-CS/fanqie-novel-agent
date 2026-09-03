@@ -106,8 +106,9 @@
 - 自动 TXT 使用临时文件加原子替换，进程中断不会留下半截正式文件。
 - 自动草稿导出不创建可发布的 ExportJob，不改变 `WAITING_APPROVAL`，不更新 StoryBible，也不触发发布。
 - 生成失败或审查阻断时不产生 TXT。
-- 已将真实第 1 章导出到 `data/exports/75747e6b-1c90-4d47-b39a-a4e856f8cd62-1.txt`；章节仍为 `WAITING_APPROVAL`，StoryBible 仍为版本 1。
-- `make lint && make typecheck && make test && make build`：40/40 测试通过。
+- 已将真实第 1 章导出到 `data/exports/天道开源_我靠多智能体集群把修仙界卷破产_卷一_边缘计算与游击战_第0001章_天道有Bug.txt`；章节仍为 `WAITING_APPROVAL`，StoryBible 仍为版本 1。
+- 导出文件名不再使用 UUID，改为 `<小说名>_<卷名>_第0001章_<章节标题>.txt`，并清理跨平台不安全字符。
+- `make lint && make typecheck && make test && make build`：41/41 测试通过。
 
 追加验证：
 
