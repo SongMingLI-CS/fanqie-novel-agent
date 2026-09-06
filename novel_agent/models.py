@@ -16,3 +16,18 @@ class ChapterStatus(StrEnum):
 
 TERMINAL = {ChapterStatus.PUBLISHED_MANUALLY, ChapterStatus.CANCELLED}
 ACTIVE = {ChapterStatus.PENDING, ChapterStatus.PLANNING, ChapterStatus.GENERATING, ChapterStatus.REVIEWING}
+
+
+class RunStatus(StrEnum):
+    PENDING = "PENDING"
+    RUNNING = "RUNNING"
+    SUCCEEDED = "SUCCEEDED"
+    FAILED = "FAILED"
+
+
+class StageState(StrEnum):
+    PENDING = "PENDING"
+    RUNNING = "RUNNING"
+    DONE = "DONE"
+    FAILED = "FAILED"
+    SKIPPED = "SKIPPED"

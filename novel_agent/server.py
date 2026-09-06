@@ -11,9 +11,11 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 from . import __version__
 from .auth import authorize
+from .checkpoints import CheckpointRepository
 from .config import Config
 from .deepseek import DeepSeekClient
 from .envfile import load_env
+from .events import EventRepository
 from .exporters import export_chapter
 from .logutil import setup_logging
 from .reviewer import review
@@ -49,6 +51,14 @@ STATIC_DIR = ROOT / "static"
 
 _STARTED = time.monotonic()
 
+# Long-lived SSE connections must neither block nor be joined at process exit;
+# daemon_threads + a shared stop flag let graceful shutdown interrupt them.
+_STOP_EVENT = threading.Event()
+
+
+class NovelHTTPServer(ThreadingHTTPServer):
+    daemon_threads = True
+
 
 class ApiError(Exception):
     """Carries an HTTP status and the stable machine-readable error code."""
@@ -72,6 +82,37 @@ def _conflict_message(message):
         "only_latest_draft_can_be_rewritten",
         "chapter_busy",
     )
+
+
+def _sanitize_run_config(data):
+    """Validate an optional per-run generation ``config`` object.
+
+    Returns a normalised dict, or ``None`` when no config was supplied. Rejects
+    malformed values with a 400 so the worker never sees a half-baked plan.
+    """
+    if data is None:
+        return None
+    if not isinstance(data, dict):
+        raise ApiError(400, "invalid_request", "config_must_be_an_object")
+    result = {}
+    if "stages" in data:
+        if not isinstance(data["stages"], list):
+            raise ApiError(400, "invalid_request", "stages_must_be_an_array")
+        known = ("outline", "chapter", "polish")
+        stages = [s for s in data["stages"] if s in known]
+        if stages and "chapter" not in stages:
+            stages = ["chapter"]
+        result["stages"] = stages
+    if "targetWords" in data:
+        try:
+            result["targetWords"] = max(0, int(data["targetWords"]))
+        except (TypeError, ValueError):
+            raise ApiError(400, "invalid_request", "targetWords_must_be_an_integer")
+    if "autoExportTxt" in data:
+        if not isinstance(data["autoExportTxt"], bool):
+            raise ApiError(400, "invalid_request", "autoExportTxt_must_be_a_boolean")
+        result["autoExportTxt"] = data["autoExportTxt"]
+    return result or None
 
 
 def resolve_static_dir(config_value):
@@ -207,6 +248,53 @@ class Handler(BaseHTTPRequestHandler):
             checks["store"] = "ok"
         return self._reply(200, {"status": "ok", "checks": checks})
 
+    # -- server-sent events --------------------------------------------------
+
+    def _stream_events(self, novel_id, since):
+        """Hold one long-lived ``text/event-stream`` connection open.
+
+        The worker (a separate process) writes progress into the ``events``
+        table; this endpoint polls rows ``id > since`` and flushes them as SSE
+        frames, so the browser keeps one connection and never misses a frame
+        even across a reconnect (it just resumes from the last ``id`` it saw).
+        """
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Accel-Buffering", "no")
+            self._security_headers()
+            self.end_headers()
+        except (BrokenPipeError, ConnectionResetError):
+            return
+        self._resp_status = 200
+        repo = EventRepository(store)
+        try:
+            cursor = int(since or 0)
+        except (TypeError, ValueError):
+            cursor = 0
+        last_beat = time.monotonic()
+        try:
+            while not _STOP_EVENT.is_set():
+                rows = repo.read_since(novel_id, cursor, limit=100)
+                for event in rows:
+                    payload = json.dumps(event, ensure_ascii=False)
+                    self.wfile.write(f"data: {payload}\n\n".encode("utf-8"))
+                    cursor = int(event["id"])
+                if rows:
+                    self.wfile.flush()
+                    last_beat = time.monotonic()
+                    continue
+                if time.monotonic() - last_beat >= 15:
+                    # Keep-alive comment so proxies do not idle the connection.
+                    self.wfile.write(b": ping\n\n")
+                    self.wfile.flush()
+                    last_beat = time.monotonic()
+                    continue
+                _STOP_EVENT.wait(0.4)
+        except (BrokenPipeError, ConnectionResetError, TimeoutError, OSError):
+            pass  # client went away / server is shutting down
+
     # -- dispatch ------------------------------------------------------------
 
     def do_GET(self):
@@ -218,6 +306,15 @@ class Handler(BaseHTTPRequestHandler):
             if path.startswith("/api/"):
                 if not self._authorized():
                     return
+                if path == "/api/events":
+                    query = parse_qs(urlparse(self.path).query)
+                    novel_id = (query.get("novel_id") or [""])[0]
+                    if not novel_id:
+                        self._error(400, "invalid_request", "novel_id_required")
+                        return
+                    return self._stream_events(
+                        novel_id, (query.get("since") or ["0"])[0]
+                    )
                 return self._route_get(path.strip("/").split("/"))
             return self._serve_static(path)
         except Exception as exc:  # noqa: BLE001 - unified error envelope
@@ -324,6 +421,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._reply(200, store.usage_series(self._int_query("days", 7, 90)))
         if parts[:2] == ["api", "ops"] and parts[2:] == ["audit"]:
             return self._reply(200, store.audit_trail(self._int_query("limit", 200, 1000)))
+        if len(parts) == 5 and parts[:2] == ["api", "novels"] and parts[4] == "runs":
+            self._novel_or_404(parts[2])
+            run = CheckpointRepository(store).latest_run_for_novel(parts[2])
+            return self._reply(200, {"run": run})
         raise ApiError(404, "not_found", "Route not found")
 
     # -- POST routes ---------------------------------------------------------
@@ -385,6 +486,9 @@ class Handler(BaseHTTPRequestHandler):
                 raise ApiError(400, "invalid_request", "chapter_number_must_be_positive")
             self._assert_chapter_generatable(novel, number)
             job, created = store.create_job(parts[2], number)
+            run_config = _sanitize_run_config(data.get("config"))
+            if run_config:
+                job = store.set_job_config(job["id"], run_config)
             return self._reply(202 if created else 200, job)
 
         # POST /api/jobs/<id>/cancel
@@ -400,6 +504,9 @@ class Handler(BaseHTTPRequestHandler):
             store.set_paused(parts[2], False)
             self._assert_chapter_generatable(novel, novel["current_chapter"] + 1)
             job, created = store.create_job(parts[2], novel["current_chapter"] + 1)
+            run_config = _sanitize_run_config(data.get("config"))
+            if run_config:
+                job = store.set_job_config(job["id"], run_config)
             try:
                 count = max(1, int(data.get("count", 1)))
             except (TypeError, ValueError):
@@ -554,9 +661,15 @@ def main():
     store = Store(config.data_dir / "novel.sqlite3")
     service = NovelService(store, DeepSeekClient(config), config, ROOT)
 
+    # Housekeeping: drop stale live events on startup (best-effort).
+    try:
+        EventRepository(store).prune(config.event_ttl_days)
+    except Exception:  # noqa: BLE001
+        logger.debug("server event prune skipped", exc_info=True)
+
     host, port = config.host, config.port
     try:
-        httpd = ThreadingHTTPServer((host, port), Handler)
+        httpd = NovelHTTPServer((host, port), Handler)
     except OSError as exc:
         logger.error("failed to bind %s:%s error=%s", host, port, exc)
         raise SystemExit(1) from exc
@@ -575,16 +688,19 @@ def main():
     def _shutdown(signum, frame):
         logger.info("received signal %s, draining http server", signum)
         stop.set()
+        _STOP_EVENT.set()
 
     signal.signal(signal.SIGTERM, _shutdown)
     signal.signal(signal.SIGINT, _shutdown)
 
     thread = threading.Thread(target=httpd.serve_forever, name="novel-httpd", daemon=True)
     thread.start()
+    _STOP_EVENT.clear()
     while not stop.wait(0.2):
         if not thread.is_alive():
             break
     logger.info("stopping http server")
+    _STOP_EVENT.set()
     httpd.shutdown()
     httpd.server_close()
     thread.join(timeout=5)

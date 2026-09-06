@@ -167,3 +167,18 @@ def validate_chapter_output(value, chapter_number):
     if any(not isinstance(value[key], list) for key in arrays): raise DeepSeekError('chapter collection fields must be arrays')
     if any(not value[key].strip() for key in ('title','chapterGoal','content')): raise DeepSeekError('chapter title, goal and content must be non-empty')
     return value
+
+
+def validate_outline_output(value, chapter_number):
+    """Validate the outline stage output (a chapter plan without prose content)."""
+    if not isinstance(value, dict): raise DeepSeekError('model outline JSON must be an object')
+    if value.get('chapterNumber') != chapter_number: raise DeepSeekError('chapter number mismatch')
+    if not isinstance(value.get('title'), str) or not value['title'].strip():
+        raise DeepSeekError('outline title must be a non-empty string')
+    if not isinstance(value.get('chapterGoal'), str) or not value['chapterGoal'].strip():
+        raise DeepSeekError('outline chapterGoal must be a non-empty string')
+    if not isinstance(value.get('beats'), list): raise DeepSeekError('outline beats must be an array')
+    for key in ('charactersUsed','eventsIntroduced','foreshadowingAdded','foreshadowingResolved','stateChanges','warnings'):
+        if value.get(key) is not None and not isinstance(value[key], list):
+            raise DeepSeekError('outline '+key+' must be an array')
+    return value

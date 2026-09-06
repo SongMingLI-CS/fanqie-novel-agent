@@ -6,7 +6,7 @@
 
 server 与 worker 启动时会自动加载 `.env`（查找顺序：`NOVEL_ENV_FILE` → 当前目录 `.env` → 仓库 `.env`），无需手动 `source`；进程已有的环境变量始终优先于文件，文件不存在也不报错。配置解析失败会在启动时抛出 `ConfigError`，带病的配置不会被静默忽略。
 
-方式 A：无需安装，直接以模块运行：
+方式 A：直接以模块运行（v0.3.0 起先安装两个运行时依赖 `httpx`、`tenacity`，或直接用方式 B 的可编辑安装自动带入）：
 
 ```bash
 python3 -m novel_agent.server
@@ -39,6 +39,23 @@ novel-agent-ops       # stats / backup / vacuum
 
 DOCX 未实现，因为审计发现项目原本没有文档生成能力；可在未来加入独立适配器，不影响现有导出格式。
 
+## 多智能体流水线与断点恢复
+
+- **写作流程（责任链）**：`大纲(outline) → 正文(chapter) → 润色(polish)`。通过环境变量 `NOVEL_AGENT_STAGES`（逗号分隔）或前端「生成参数 → 写作流程」选择；留空为传统的单次合成模式（向后兼容，API 不传 `config` 时行为不变）。每章可配置目标字数 `config.targetWords`（覆盖圣经缺省并传给 Reviewer）。
+- **Prompt 治理**：所有提示词提取到仓库 `prompts/*.md`（`system.md` / `request.md` / `repair.md` / `outline.md` / `chapter.md` / `polish.md`），由 `novel_agent/prompts.py` 的 `PromptManager` 统一加载、渲染与占位符校验，并写入 `usage.prompt_version`（`novel-writer@2`）以追踪每次调用使用的提示词版本。
+- **检查点与恢复**：每完成一个 Agent 节点即在一个事务中把上下文/记忆写入 `agent_runs` / `agent_stages` / `checkpoints` 三张表。worker/服务重启后，`NOVEL_AUTO_RESUME=true`（默认）时，中断的任务会从**最后一个未完成节点继续**，已完成节点不再重复调用模型（不重复计费）。数据存取统一走 `novel_agent/checkpoints.py` 的 `CheckpointRepository`（DAO，复用每线程独立连接 + `BEGIN IMMEDIATE` 的线程安全模型）。
+- 诚实边界：单次模型调用内部不做 token 级续接（生成式模型无法安全续写）；安全恢复粒度是一个已完成并落检查点的节点。
+- 新增 API：`GET /api/novels/<id>/runs/latest` 返回最近一次 run 及其阶段状态；`POST /api/novels/<id>/chapters/generate` 与 `continue` 可携带 `config`（`stages` / `targetWords` / `autoExportTxt`）。
+
+## 异步模型调用与实时流式
+
+自 v0.3.0 起运行时依赖为 `httpx` + `tenacity`（见 `pyproject.toml`；`pip install -e .` 自动安装）。
+
+- **全异步 DeepSeek 客户端** `novel_agent/llm.py`：`AsyncLLMClient` 基于 httpx 流式接收，错误分类与同步客户端完全一致；`tenacity` 负责重试策略（指数退避、上限 30s，HTTP 429 优先尊重 `Retry-After`），`NOVEL_MAX_RETRIES` 控制尝试次数；`stream()` 逐块产出 `delta`。
+- **Worker 流式处理**：worker 主循环改用 `asyncio.run(service.process_stream(job))`，每个 token/阶段事件实时写入 `events` 表（`llm.delta` 节流合并、`llm.text` 携带已验证正文、`agent.stage/run`、`checkpoint.saved`、`chapter.ready`）。
+- **SSE 事件接口**：`GET /api/events?novel_id=<id>&since=<cursor>` 以 `text/event-stream` 保持长连接推送（每 0.4s 轮询 events 表、15s 心跳注释），浏览器断线后用 `since` 续读不丢帧；鉴权与 `/api` 一致，通过 fetch 携带 `Authorization`。
+- **前端逐字打印**：控制台在正文阶段完成后用打字机效果逐字揭示 `llm.text` 内容；阶段切换、token 接收计数由事件流实时驱动（失败自动回退轮询）。
+
 ## 验证
 
 ```bash
@@ -59,4 +76,11 @@ make build
 
 ## 前端
 
-`static/index.html` 为单文件控制台：状态徽章、按状态着色的章节卡片、Job/用量看板、自动轮询刷新、问题横幅（如 `DEEPSEEK_API_KEY` 缺失会醒目提示并给出补齐 `.env` 后重启 server/worker 的修复步骤）、鉴权与深浅色主题切换。后端未改动；若生成失败，先在页面顶部横幅确认是否为「缺少 DeepSeek API Key」后再排查模型/网络问题。
+前端已重构为三文件：`static/index.html`（骨架）+ `static/app.css`（设计令牌与样式）+ `static/app.js`（逻辑）。采用宽屏双栏布局：
+
+- **左侧栏**：小说选择、生成参数（写作流程单选 + 目标字数）、**Agent 状态时间线**（大纲设计 → 正文撰写 → 润色，彩色 Badge + 脉冲动画 + 当前节点 Spinner）、章节列表、任务/用量看板、StoryBible 编辑。
+- **右侧主区**：选中章节的沉浸式阅读排版（衬线字体、行高 1.95、居中 44em 阅读栏、段落缩进与间距），正文/梗概/审查结果分区展示，章节操作（编辑/审查/批准/导出/发布/删除重写/重试）内联呈现。
+- **状态指示**：顶部细进度条 + 当前节点 Spinner，Agent 调用模型期间由轮询驱动；断网/缺 Key/401 等以顶部横幅醒目提示修复步骤。深浅色主题跟随系统并可手动切换。
+- **实时流式**：通过 `GET /api/events` 的 SSE 长连接，生成期间左侧 Agent 时间线实时流转，右侧在正文阶段完成后用打字机逐字揭示内容（闪烁光标）；连接断开后用事件游标自动续读，失败则回退轮询。
+
+后端接口未变（新增的 `runs/latest` 与 `config` 为可选增量）；若生成失败，先在页面顶部横幅确认是否为「缺少 DeepSeek API Key」后再排查模型/网络问题。

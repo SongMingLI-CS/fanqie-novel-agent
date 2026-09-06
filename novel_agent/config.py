@@ -81,6 +81,14 @@ class Config:
         log_format = _env_str("NOVEL_LOG_FORMAT", "text").lower()
         static_dir = _env_str("NOVEL_STATIC_DIR", "")
 
+        # Multi-agent pipeline: comma-separated stage list (outline/chapter/polish).
+        # Empty means the legacy single-call compose path.
+        agent_stages = [
+            s.strip() for s in _env_str("NOVEL_AGENT_STAGES", "").split(",") if s.strip()
+        ]
+        auto_resume = _env_bool("NOVEL_AUTO_RESUME", True)
+        event_ttl_days = _env_int("NOVEL_EVENT_TTL_DAYS", 7, lo=1, hi=365)
+
         # Thinking mode is a model capability switch, not a free-form string.
         if thinking not in ("enabled", "disabled"):
             raise ConfigError("DEEPSEEK_THINKING must be 'enabled' or 'disabled'")
@@ -89,6 +97,12 @@ class Config:
         valid_levels = {"CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG", "NOTSET"}
         if log_level not in valid_levels:
             raise ConfigError(f"NOVEL_LOG_LEVEL must be one of {sorted(valid_levels)}")
+        valid_stages = {"outline", "chapter", "polish"}
+        unknown = [s for s in agent_stages if s not in valid_stages]
+        if unknown:
+            raise ConfigError(
+                f"NOVEL_AGENT_STAGES must be a subset of {sorted(valid_stages)}, got {unknown!r}"
+            )
 
         self.data_dir = data_dir
         self.base_url = base_url
@@ -113,6 +127,9 @@ class Config:
         self.log_level = log_level
         self.log_format = log_format
         self.static_dir = static_dir
+        self.agent_stages = agent_stages
+        self.auto_resume = auto_resume
+        self.event_ttl_days = event_ttl_days
 
         # Keyword overrides (used by tests) always win.
         for key, value in overrides.items():

@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import signal
 import threading
@@ -7,6 +8,8 @@ from concurrent.futures import ThreadPoolExecutor
 from .config import Config
 from .deepseek import DeepSeekClient
 from .envfile import load_env
+from .events import EventRepository
+from .llm import AsyncLLMClient
 from .logutil import setup_logging
 from .service import NovelService
 from .store import Store
@@ -58,6 +61,54 @@ def _process_one(config, db_path):
         store.close()
 
 
+def run_once_stream(store, service):
+    """Claim and process at most one job over the async/streaming pipeline.
+
+    Same crash semantics as :func:`run_once`, but the model call runs through
+    :meth:`NovelService.process_stream`, which publishes live token/stage
+    events into the ``events`` table for the web console to stream.
+    """
+    job = store.claim_job(service.config.job_timeout)
+    if job is None:
+        return False
+    try:
+        asyncio.run(service.process_stream(job))
+    except Exception as exc:  # noqa: BLE001 - a bad job must not kill the daemon
+        logger.exception(
+            "job streaming crashed job_id=%s chapter=%s novel=%s",
+            job.get("id"), job.get("chapter_number"), job.get("novel_id"),
+            extra={"fields": {"job_id": job.get("id"), "chapter": job.get("chapter_number")}},
+        )
+        try:
+            store.fail_job(
+                job,
+                f"worker_crash:{type(exc).__name__}: {exc}",
+                service.config.max_job_attempts,
+            )
+        except Exception:  # noqa: BLE001 - never mask the original crash
+            logger.exception("failed to mark crashed job job_id=%s", job.get("id"))
+    return True
+
+
+def _process_one_stream(config, db_path):
+    store = Store(db_path)
+    client = None
+    try:
+        client = AsyncLLMClient(config)
+        service = NovelService(
+            store, DeepSeekClient(config), config,
+            async_client=client, events=EventRepository(store),
+        )
+        return run_once_stream(store, service)
+    finally:
+        if client is not None:
+            try:
+                asyncio.run(client.aclose())
+            except Exception:  # noqa: BLE001 - closing the pool is best-effort
+                pass
+        store.close()
+
+
 def main():
     load_env()  # .env is loaded before Config() so values are picked up.
     config = Config()  # raises ConfigError on malformed settings
@@ -65,6 +116,16 @@ def main():
 
     db_path = config.data_dir / "novel.sqlite3"
     max_workers = max(1, config.worker_concurrency)
+
+    # Housekeeping: drop stale live events on startup (best-effort).
+    try:
+        _store = Store(db_path)
+        try:
+            EventRepository(_store).prune(config.event_ttl_days)
+        finally:
+            _store.close()
+    except Exception:  # noqa: BLE001
+        logger.debug("worker event prune skipped", exc_info=True)
 
     stop = threading.Event()
 
@@ -87,7 +148,7 @@ def main():
         while not stop.is_set():
             active = 0
             with ThreadPoolExecutor(max_workers=max_workers) as pool:
-                futures = [pool.submit(_process_one, config, db_path) for _ in range(max_workers)]
+                futures = [pool.submit(_process_one_stream, config, db_path) for _ in range(max_workers)]
                 for future in futures:
                     try:
                         if future.result():

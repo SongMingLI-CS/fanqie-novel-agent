@@ -38,6 +38,10 @@ CREATE TABLE IF NOT EXISTS publish_records (id TEXT PRIMARY KEY, chapter_id TEXT
 CREATE TABLE IF NOT EXISTS export_jobs (id TEXT PRIMARY KEY, chapter_id TEXT NOT NULL, format TEXT NOT NULL, status TEXT NOT NULL, idempotency_key TEXT NOT NULL UNIQUE, path TEXT DEFAULT '', error TEXT DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS publish_jobs (id TEXT PRIMARY KEY, chapter_id TEXT NOT NULL, status TEXT NOT NULL, idempotency_key TEXT NOT NULL UNIQUE, platform TEXT DEFAULT '', external_url TEXT DEFAULT '', error TEXT DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS audit_log (id TEXT PRIMARY KEY, novel_id TEXT, action TEXT NOT NULL, detail TEXT DEFAULT '{}', created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS agent_runs (id TEXT PRIMARY KEY, job_id TEXT NOT NULL UNIQUE, novel_id TEXT NOT NULL, chapter_number INTEGER NOT NULL, stages TEXT NOT NULL, target_words INTEGER DEFAULT 0, auto_export_txt INTEGER DEFAULT 1, status TEXT NOT NULL, current_stage TEXT DEFAULT '', error TEXT DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS agent_stages (run_id TEXT NOT NULL, stage TEXT NOT NULL, state TEXT NOT NULL, payload TEXT DEFAULT '{}', raw TEXT DEFAULT '', error TEXT DEFAULT '', started_at TEXT DEFAULT '', finished_at TEXT DEFAULT '', PRIMARY KEY(run_id,stage), FOREIGN KEY(run_id) REFERENCES agent_runs(id));
+CREATE TABLE IF NOT EXISTS checkpoints (run_id TEXT NOT NULL, stage TEXT NOT NULL, context TEXT DEFAULT '{}', memory TEXT DEFAULT '{}', created_at TEXT NOT NULL, PRIMARY KEY(run_id,stage), FOREIGN KEY(run_id) REFERENCES agent_runs(id));
+CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY AUTOINCREMENT, novel_id TEXT NOT NULL, run_id TEXT, type TEXT NOT NULL, payload TEXT DEFAULT '{}', created_at TEXT NOT NULL);
 """
 
 
@@ -60,6 +64,7 @@ class Store:
         conn.executescript(SCHEMA)
         self._ensure_column(conn, 'chapters', 'beats', "TEXT DEFAULT '[]'")
         self._ensure_column(conn, 'jobs', 'next_attempt_at', "TEXT")
+        self._ensure_column(conn, 'jobs', 'config', "TEXT DEFAULT ''")
         conn.commit()
 
     # -- connections ---------------------------------------------------------
@@ -240,8 +245,8 @@ class Store:
             jid = str(uuid.uuid4())
             ts = now()
             conn.execute(
-                "INSERT INTO jobs VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-                (jid, nid, number, kind, "PENDING", key, 0, None, ts, "", ts, ts),
+                "INSERT INTO jobs VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (jid, nid, number, kind, "PENDING", key, 0, None, ts, "", ts, ts, ""),
             )
             conn.execute(
                 "INSERT OR IGNORE INTO chapters(id,novel_id,number,status,created_at,updated_at) "
@@ -304,6 +309,14 @@ class Store:
     def get_job(self, jid):
         row = self.db.execute("SELECT * FROM jobs WHERE id=?", (jid,)).fetchone()
         return dict(row) if row else None
+
+    def set_job_config(self, jid, config):
+        """Attach an optional per-run generation config (stages/targetWords/...)."""
+        with self.tx():
+            self.db.execute(
+                "UPDATE jobs SET config=? WHERE id=?", (dumps(config), jid)
+            )
+        return self.get_job(jid)
 
     def jobs(self, nid):
         return [
@@ -424,8 +437,8 @@ class Store:
             key = f"{nid}:{number}:generate"
             jid = str(uuid.uuid4())
             conn.execute(
-                "INSERT INTO jobs VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-                (jid, nid, number, "generate", "PENDING", key, 0, None, ts, "", ts, ts),
+                "INSERT INTO jobs VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (jid, nid, number, "generate", "PENDING", key, 0, None, ts, "", ts, ts, ""),
             )
             conn.commit()
             job = dict(conn.execute("SELECT * FROM jobs WHERE id=?", (jid,)).fetchone())
