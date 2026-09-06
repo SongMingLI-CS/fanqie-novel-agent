@@ -27,17 +27,17 @@ novel-agent-ops       # stats / backup / vacuum
 ### 运维接口与优雅退出
 
 - 健康检查（无需鉴权）：`GET /healthz` 存活探测恒返回 200；`GET /readyz` 就绪探测会额外对 SQLite 执行 `SELECT 1`，数据库不可用时返回 503 `store_unavailable`。
-- 优雅退出：server 与 worker 收到 `SIGTERM`/`SIGINT` 后停止接收新请求/任务，收尾后以退出码 0 结束，适合被 systemd/launchd/容器托管。
+- 优雅退出：server 与 worker 收到 `SIGTERM`/`SIGINT` 后停止接收新请求/任务，收尾后以退出码 0 结束，适合被 systemd/launchd/容器托管；Windows 下同样注册 `SIGBREAK`（控制台 `CTRL+BREAK`），可用 `CREATE_NEW_PROCESS_GROUP` + `CTRL_BREAK_EVENT` 实现跨平台优雅停止（回归测试已覆盖）。
 - 结构化日志：`NOVEL_LOG_FORMAT=text|json`（JSON 每行一个对象并合并 job/chapter 等字段），`NOVEL_LOG_LEVEL` 控制级别；每条 HTTP 请求记录 method/path/status/duration_ms。
 - 运维指标（与 `/api` 一样受鉴权保护）：`GET /api/ops/metrics` 聚合快照、`GET /api/ops/usage?days=N`（≤90）按日零填充趋势、`GET /api/ops/audit?limit=N`（≤1000）审计轨迹（新在前）；写操作自动落审计：建书/改 Bible/取消任务/重写章节/导出/人工发布。
 - DB 维护 CLI：`python3 -m novel_agent.ops stats --db data/novel.sqlite3`（打印指标+日趋势+磁盘占用）、`backup --db … --out … [--force]`（SQLite 在线备份，可边运行边备份）、`vacuum --db …`（WAL checkpoint + VACUUM）。也可用 `novel-agent-ops` 等 console script。
 - 安全默认：设置 `NOVEL_AUTH_TOKEN` 后 `/api/*` 需 `Authorization: Bearer <token>`，比较为常数时间（SHA-256 摘要 + `hmac.compare_digest`）并对失败做进程内指数退避节流；所有响应带 `Cache-Control: no-store`、`X-Content-Type-Options: nosniff`、`X-Frame-Options: DENY`；请求体上限 1MB（超限 413 `payload_too_large`，负长度拒绝）；静态文件已做路径穿越/空字节防护。健康检查与前端页面保持公开。
 
-完整配置见 `.env.example`；`DEEPSEEK_BASE_URL` 和 `DEEPSEEK_API_KEY` 必须由部署环境注入，代码不内置供应商地址或密钥。缺少配置时服务不会伪造模型结果，生成任务会安全失败并记录配置错误。发布是半自动的：审查通过后导出 TXT/Markdown/JSON，用户在目标平台手动发布，再回系统确认；没有番茄自动点击、登录或验证码绕过。
+完整配置见 `.env.example`；`DEEPSEEK_BASE_URL` 和 `DEEPSEEK_API_KEY` 必须由部署环境注入，代码不内置供应商地址或密钥。缺少配置时服务不会伪造模型结果，生成任务会安全失败并记录配置错误。发布是半自动的：审查通过后导出 TXT/Markdown/JSON/DOCX，用户在目标平台手动发布，再回系统确认；没有番茄自动点击、登录或验证码绕过。
 
 默认启用 `NOVEL_AUTO_EXPORT_TXT=true`：章节完整生成并通过自动审查后，会同步写入 `data/exports/<小说名>_<卷名>_第0001章_<章节标题>.txt`。文件名会清理跨平台不安全字符；该文件是待审核草稿，不会把章节改成已发布或正式导出状态，人工发布流程保持不变。
 
-DOCX 未实现，因为审计发现项目原本没有文档生成能力；可在未来加入独立适配器，不影响现有导出格式。
+导出支持四种格式：TXT / Markdown / JSON / **DOCX**。DOCX 用标准库直接生成最小合法 OOXML 包（不引入 python-docx），标题与章节名加粗、正文按空行分段，Office Word/WPS 可直接打开；API 与导出按钮同样支持 `format=docx`。
 
 ## 多智能体流水线与断点恢复
 
@@ -55,6 +55,28 @@ DOCX 未实现，因为审计发现项目原本没有文档生成能力；可在
 - **Worker 流式处理**：worker 主循环改用 `asyncio.run(service.process_stream(job))`，每个 token/阶段事件实时写入 `events` 表（`llm.delta` 节流合并、`llm.text` 携带已验证正文、`agent.stage/run`、`checkpoint.saved`、`chapter.ready`）。
 - **SSE 事件接口**：`GET /api/events?novel_id=<id>&since=<cursor>` 以 `text/event-stream` 保持长连接推送（每 0.4s 轮询 events 表、15s 心跳注释），浏览器断线后用 `since` 续读不丢帧；鉴权与 `/api` 一致，通过 fetch 携带 `Authorization`。
 - **前端逐字打印**：控制台在正文阶段完成后用打字机效果逐字揭示 `llm.text` 内容；阶段切换、token 接收计数由事件流实时驱动（失败自动回退轮询）。
+
+## 无 Key 演示：录制与回放（demo）
+
+演示链路复用**真实生产路径**（`service.process_stream` 流水线 + `events` 表 + SSE
+端点 + 前端打字机），只是把模型换成一个**确定性回放器**，全程不需要
+`DEEPSEEK_API_KEY` 也不联网：
+
+```bash
+python -m novel_agent.demo replay                # 内置演示录制，headless
+python -m novel_agent.demo replay --port 8890    # 同时起真实 HTTP/SSE，浏览器观看
+python -m novel_agent.demo replay --replay data/replays/c1.json --port 8890
+```
+
+- `record`：带真实 Key 跑一章（`--novel-id` + `--chapter` + `--stages`），把每次
+  模型调用的 `(system, user, text, usage)` 与小说快照存成 replay JSON。
+- `replay`：按调用顺序回放。`record` 生成的文件默认**严格校验**当前提示词与录制的
+  一致（防止旧录制静默答非所问），场景不符时可用 `--loose` 仅按顺序回放；内置演示
+  固定场景无需校验。
+- 回放走完整多智能体流程（outline → chapter → polish）、断点检查点、`llm.delta`
+  事件与审查门禁；章节完成后打印事件时间线并在终端逐字揭示正文。
+- 不插桩生产代码：`novel_agent/replay.py` 与 `novel_agent/demo.py` 都是独立新增，
+  worker/server 与真实客户端不受影响。测试：`tests/test_demo.py`（8 例）。
 
 ## 验证
 

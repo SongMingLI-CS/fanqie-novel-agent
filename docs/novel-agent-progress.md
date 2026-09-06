@@ -4,8 +4,8 @@
 
 - 分支：`codex/novel-agent`
 - 开始日期：2026-09-02
-- 当前阶段：多智能体流式写作 v0.3.0 完成（流水线+断点恢复+异步流式+SSE 逐字打印）
-- 最近提交：589f4de
+- 当前阶段：多智能体流式写作 v0.3.0 完成（流水线+断点恢复+异步流式+SSE 逐字打印）+ 无 Key 演示回放/Windows 优雅停止/DOCX 导出
+- 最近提交：26b78ea
 
 ## Phase 1：审计、Skill 和剧情状态模型
 
@@ -236,12 +236,51 @@
   `FileNotFoundError`（`OSError` 子类）被误分类为 `tcp_connection_error` 且 3 次
   重试全败；去掉该 Linux 专属参数后测试在注入 opener 上跨平台通过（非网络依赖）。
 - **`test_http_ops` 12 个进程测试**：`python3` 命令改为 `sys.executable`
-  （Linux 下同值，纯跨平台改进），子进程在本机即可拉起；其中 2 个 SIGTERM 优雅
-  退出用例在 Windows 下语义不适用（`send_signal(SIGTERM)` 走 `TerminateProcess`，
-  处理器收不到信号），用 `@skipUnless(os.name == "posix", ...)` 如实跳过，Linux
-  上仍完整执行。
+  （Linux 下同值，纯跨平台改进），子进程在本机即可拉起；随后 server/worker 注册
+  `SIGBREAK`，Windows 用例改用 `CREATE_NEW_PROCESS_GROUP` + `CTRL_BREAK_EVENT`
+  真实验证优雅退出（rc=0），两个用例不再跳过。
 
-验证：Windows 本机全量 `python -m unittest discover -s tests` = **Ran 136 tests,
-OK (skipped=2)**；`compileall` 与 `git diff --check` 通过。另注：运行 v0.3.0 前需
+验证：Windows 本机全量 `python -m unittest discover -s tests` = **Ran 145 tests,
+OK（无跳过）**；`compileall` 与 `git diff --check` 通过。另注：运行 v0.3.0 前需
 `python -m pip install -e .`（自动带 `httpx`/`tenacity`）。
 
+
+
+## 2026-09-06（深夜）：三项功能补强（无 Key 演示回放 / Windows 优雅停止 / DOCX 导出）
+
+### ① 无 Key 端到端演示：录制 + 回放
+
+- `novel_agent/replay.py`（新增）：`Recording`（v1 JSON：小说快照 + 有序模型调用
+  `system/user/text/usage`）、`CapturingAsyncClient`（包一层真实异步客户端录制
+  每次调用）、`ReplayClient`（既当同步又当异步客户端按序回放；record 文件默认严格
+  校验提示词一致，`loose` 可仅按顺序）。
+- `novel_agent/demo.py`（新增）：`python -m novel_agent.demo replay` 用内置演示
+  录制跑通真实 `service.process_stream` 流水线（outline→chapter→polish、检查点、
+  `llm.delta/llm.text`、审查门禁），headless 打印事件时间线并在终端逐字揭示正文；
+  `--port` 时复用 `server` 模块全局注入起真实 HTTP/SSE，浏览器可直接看打字机；
+  `record` 子命令带真实 Key 生成 replay 文件。
+- 不插桩生产代码：worker/server/真实客户端零改动；测试 `tests/test_demo.py` 8 例
+  （录制结构、严格/宽松回放、耗竭报错、headless 端到端、HTTP 模式 URL）。
+
+### ② Windows 优雅停止（SIGBREAK）
+
+- `server.py`/`worker.py` 的 main 在 `SIGTERM`/`SIGINT` 之外同时注册 `SIGBREAK`
+  （仅 Windows 存在）；`tests/test_http_ops.py` 用 `CREATE_NEW_PROCESS_GROUP`
+  拉起子进程，Windows 侧发 `CTRL_BREAK_EVENT`、POSIX 侧发 `SIGTERM` 统一验证
+  rc=0。2 个原被跳过的优雅退出用例现跨平台真跑，**无 skip**。
+
+### ③ DOCX 导出（零依赖 OOXML）
+
+- `exporters.py`：`EXPORT_FORMATS` 增加 `docx`，`_docx_bytes()` 用标准库
+  `zipfile` 生成最小合法 OOXML（`[Content_Types].xml` / `_rels/.rels` /
+  `word/document.xml`；标题与卷章行加粗、正文按空行分段、XML 转义），原子写盘
+  与既有导出一致；`server.py` 的 `EXPORT_FORMATS` 改为从 exporters 引用，API
+  与导出按钮均支持 `format=docx`。
+- 测试：`test_export_docx_is_valid_ooxml_with_escaped_text`（zip 结构、转义、
+  无 tmp 残留）。
+
+### 验证
+
+Windows 全量 `python -m unittest discover -s tests` = **Ran 145 tests, OK**；
+`compileall`、`git diff --check` 通过。文档同步：README（demo/优雅退出/DOCX）、
+`docs/novel-agent-publishing.md`、`docs/novel-agent-deployment.md`。

@@ -3,7 +3,7 @@
 ## 发布器
 
 - `DryRunPublisher`：只校验并记录将要发布的摘要，不产生外部副作用。
-- `LocalFilePublisher`：将已批准章节写入配置目录，使用原子临时文件与稳定命名，供人工上传。
+- `LocalFilePublisher`：将已批准章节写入配置目录，使用原子临时文件与稳定命名，供人工上传；支持 `txt` / `md` / `json` / `docx` 四种导出格式（DOCX 为最小合法 OOXML，仅用标准库生成）。
 - `ExternalPublisher`：仅保留未来由正式平台 API 实现的接口；当前版本不调用它，不使用浏览器点击、登录、验证码或平台自动化。
 
 代码中的 `publishers.py` 提供 `DryRunPublisher`、`LocalFilePublisher` 和 `ExternalPublisher` 契约。前两者只产生 dry-run 结果或本地文件；`ExternalPublisher` 没有默认实现，避免误接入外部平台。

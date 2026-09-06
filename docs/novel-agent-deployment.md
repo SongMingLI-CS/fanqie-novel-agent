@@ -15,7 +15,7 @@ novel-agent-worker
 novel-agent-ops
 ```
 
-监听地址/端口由 `NOVEL_HOST`/`NOVEL_PORT` 控制（默认 `127.0.0.1:8787`；`NOVEL_PORT=0` 使用随机空闲端口并在 stdout 打印 `NOVEL_AGENT_LISTENING host:port`，便于编排层动态发现）。两个进程收到 `SIGTERM`/`SIGINT` 后优雅退出（停止接收新请求/任务、收尾后以退出码 0 结束），适合被 systemd/launchd/容器托管。
+监听地址/端口由 `NOVEL_HOST`/`NOVEL_PORT` 控制（默认 `127.0.0.1:8787`；`NOVEL_PORT=0` 使用随机空闲端口并在 stdout 打印 `NOVEL_AGENT_LISTENING host:port`，便于编排层动态发现）。两个进程收到 `SIGTERM`/`SIGINT` 后优雅退出（停止接收新请求/任务、收尾后以退出码 0 结束），适合被 systemd/launchd/容器托管；Windows 控制台下同样注册 `SIGBREAK`，支持 `CTRL+BREAK` 优雅停止。
 
 健康检查无需鉴权：`GET /healthz` 为存活探测恒 200；`GET /readyz` 为就绪探测，会额外对 SQLite 执行 `SELECT 1`，不可用时返回 503 `store_unavailable`。可在反向代理/负载均衡处配置，避免把流量打到未就绪实例。
 
