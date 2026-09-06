@@ -4,8 +4,8 @@
 
 - 分支：`codex/novel-agent`
 - 开始日期：2026-09-02
-- 当前阶段：Phase 2-10 基础实现完成
-- 最近提交：f9447bc
+- 当前阶段：多智能体流式写作 v0.3.0 完成（流水线+断点恢复+异步流式+SSE 逐字打印）
+- 最近提交：589f4de
 
 ## Phase 1：审计、Skill 和剧情状态模型
 
@@ -173,3 +173,61 @@
 - 路径穿越复核：`_serve_static` 的 `resolve()` 包含性检查正确；补 `\x00` 空字节守卫（404），并加编码穿越回归测试（`%2e%2e`/`..%2f` 均 404，绝不泄漏 static 之外文件）。
 - 密钥脱敏复核：`Config.__repr__` 只显示 `auth=on/off`；请求日志仅 method/path/status/duration，不落鉴权头/请求体；DeepSeek 日志不记录 API key（既有测试 `test_failure_logs_never_include_api_key` 与 `test_repr_hides_no_auth_state` 继续通过）。
 - 测试：`tests/test_auth.py` 6 条单测 + HTTP 层（配置令牌后 API 401/200、健康与静态保持开放、413 上限、安全头、路径穿越）全部通过。
+
+## 2026-09-06：多智能体流水线、断点恢复与异步流式交付（v0.3.0，提交 589f4de）
+
+状态：完成。自 61fff49（控制台加固）之后的整段未提交增量一次落盘：多智能体
+流水线与异步 DeepSeek/SSE 流式在 `service.py`/`server.py`/`worker.py`/`static/*`
+等共享文件中深度交织，无法在不破坏中间状态的前提下拆成两个可独立运行的提交，
+因此作为一个整体提交（32 文件，+3369/−1095），冒烟与测试均针对该最终态。
+
+### ① 多智能体责任链 + 断点恢复（含提示词治理）
+
+- `prompts/`：全部 system/user/repair 提示词外置为 Markdown（`outline/chapter/
+  polish/repair/system/request`），`prompts.py` 的 `PromptManager` 负责惰性加载、
+  `<<var>>` 占位符严格渲染校验，并落 `usage.prompt_version = novel-writer@2`。
+- `stages.py`/`checkpoints.py`/`context.py`：`outline → chapter → polish`
+  责任链，`AgentContext` 记忆逐节点传递；每个节点完成后把累计上下文写入新增的
+  `agent_runs`/`agent_stages`/`checkpoints` 三表（每线程连接 + `BEGIN IMMEDIATE`）。
+  worker/服务重启后按 `NOVEL_AUTO_RESUME`（默认开）从未完成节点续跑，已完成节点
+  不重复调用模型。`models.py` 增 `RunStatus`/`StageState`；`deepseek.py` 增
+  `validate_outline_output`；`GET /api/novels/<id>/runs/latest` 暴露最近一次 run 与
+  各阶段状态；`generate`/`continue` 接受 `config.{stages,targetWords,autoExportTxt}`。
+
+### ② 异步模型调用：httpx + tenacity
+
+- `llm.py` 新增 `AsyncLLMClient`：httpx 全异步流式（`stream + include_usage`），
+  错误分类与同步 `deepseek.py` 一致；tenacity 指数退避重试，429 优先尊重
+  `Retry-After`、退避封顶 30s、`NOVEL_MAX_RETRIES` 控预算；配置类/400/401/404/
+  中途断流与截断**不重试**（避免重复计费）。`stream()` 逐块产出 `delta` → `usage`。
+
+### ③ 跨进程事件总线 + SSE 实时流 + 逐字打印
+
+- `events.py` 新增 `EventRepository`：`events` 自增游标表，`publish/read_since/
+  latest_id/prune`，跨 server/worker 进程；`service.process_stream`（async）按
+  ~100 字/300ms 节流发布 `llm.delta`，完整校验后发布 `llm.text`（已验证正文），
+  并发布 `agent.stage/run`、`checkpoint.saved`、`chapter.ready`、`job.status`；
+  同步旧路径零改动保留。
+- worker 主循环切到 `run_once_stream`（线程内 `asyncio.run`），启动时清理过期事件；
+  server 增 `GET /api/events?novel_id&since` SSE 长连接（0.4s 轮询 + 15s 心跳注释、
+  断线按 since 游标续读）；`NOVEL_EVENT_TTL_DAYS`（默认 7）控保留天数。
+- 前端：`static/` 重构为 index.html + app.css + app.js；SSE 客户端用 fetch +
+  ReadableStream 解析帧并携带 `Authorization`，切换小说/改凭据自动重连，断线由轮询
+  兜底；`llm.delta` 实时驱动 token 计数与阶段时间线，`llm.text` 触发打字机逐字揭示
+  （闪烁光标），阶段事件即时刷新左侧 Agent 时间线。
+
+### ④ 验证
+
+- 定向复跑全绿：`test_events` 4、`test_llm_async` 7、`test_streaming` 4、
+  `test_pipeline` 4、`test_prompts` 6、`test_repo_and_config` 5、`test_config` 12；
+  `compileall` 与 `git diff --check` 通过。
+- 冒烟：服务端正常启动，`/api/events` 缺 `novel_id` 返回 400，前端静态资源 200；
+  SSE 端点真连接实测逐帧与游标语义通过（`test_streaming`）。
+
+### 已知（既有、非本次引入）
+
+Windows 本机仍剩环境性失败：3 个测试以默认 GBK 读 UTF-8 导出/静态文件、1 个依赖
+真实网络的超时重试用例、12 个 `test_http_ops` 因无 `python3` 命令（rc=9009）无法
+运行——这些在 Linux/UTF-8 + `python3` 环境下通过。另注：运行 v0.3.0 前需
+`python -m pip install -e .`（自动带 `httpx`/`tenacity`）。
+
