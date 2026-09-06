@@ -73,6 +73,16 @@ class NovelTests(unittest.TestCase):
         ch={'number':1,'title':'开端','content':'正文','summary':'目标','characters':[],'events':[],'foreshadowing_added':[],'foreshadowing_resolved':[],'review':{'passed':True},'model':'test','generated_at':'now'}
         for fmt in ('txt','md','json'):
             p=export_chapter(ch,self.novel,fmt,Path(self.tmp.name)); self.assertTrue(p.exists()); self.assertIn('正文',p.read_text(encoding="utf-8")); self.assertFalse(list(Path(self.tmp.name).glob('*.tmp')))
+    def test_export_docx_is_valid_ooxml_with_escaped_text(self):
+        import zipfile
+        ch={'number':1,'title':'开端','content':'第一段 <符号&名字>。\n\n第二段。','summary':'x','characters':[],'events':[],'foreshadowing_added':[],'foreshadowing_resolved':[],'review':{'passed':True},'model':'test','generated_at':'now'}
+        p=export_chapter(ch,self.novel,'docx',Path(self.tmp.name)); self.assertTrue(p.exists()); self.assertEqual(p.suffix,'.docx')
+        self.assertFalse(list(Path(self.tmp.name).glob('*.tmp')))
+        with zipfile.ZipFile(p) as archive:
+            names=set(archive.namelist())
+            self.assertIn('[Content_Types].xml',names); self.assertIn('_rels/.rels',names); self.assertIn('word/document.xml',names)
+            xml=archive.read('word/document.xml').decode('utf-8')
+        self.assertIn('第一段 &lt;符号&amp;名字&gt;。',xml); self.assertIn('开端',xml); self.assertIn('<w:document',xml); self.assertNotIn('blockingIssues',xml)
     def test_export_filename_is_readable_and_path_safe(self):
         name=export_filename({'number':7,'title':'开端/转折:*?'},{'title':'测试<小说>','volume':'卷一：启程'},'txt')
         self.assertEqual(name,'测试_小说_卷一_启程_第0007章_开端_转折.txt')

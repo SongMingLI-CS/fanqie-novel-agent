@@ -135,6 +135,8 @@ def main():
 
     signal.signal(signal.SIGTERM, _handle_signal)
     signal.signal(signal.SIGINT, _handle_signal)
+    if hasattr(signal, "SIGBREAK"):  # Windows console CTRL+BREAK -> graceful stop
+        signal.signal(signal.SIGBREAK, _handle_signal)
 
     # Adaptive polling: spin quickly while work is available, but back off when
     # the queue is empty so a long-running daemon does not blind-poll / spin.

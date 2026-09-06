@@ -16,7 +16,7 @@ from .config import Config
 from .deepseek import DeepSeekClient
 from .envfile import load_env
 from .events import EventRepository
-from .exporters import export_chapter
+from .exporters import EXPORT_FORMATS, export_chapter
 from .logutil import setup_logging
 from .reviewer import review
 from .service import NovelService
@@ -25,7 +25,6 @@ from .store import Store
 logger = logging.getLogger(__name__)
 
 ROOT = Path(__file__).resolve().parents[1]
-EXPORT_FORMATS = ("txt", "md", "json")
 MAX_BODY = 1_000_000  # 1 MB request-body cap for JSON endpoints.
 
 CONTENT_TYPES = {
@@ -692,6 +691,8 @@ def main():
 
     signal.signal(signal.SIGTERM, _shutdown)
     signal.signal(signal.SIGINT, _shutdown)
+    if hasattr(signal, "SIGBREAK"):  # Windows console CTRL+BREAK -> graceful stop
+        signal.signal(signal.SIGBREAK, _shutdown)
 
     thread = threading.Thread(target=httpd.serve_forever, name="novel-httpd", daemon=True)
     thread.start()

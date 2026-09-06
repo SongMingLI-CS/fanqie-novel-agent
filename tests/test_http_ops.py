@@ -68,6 +68,21 @@ class ProcessOpsTests(unittest.TestCase):
                 except OSError:
                     pass
 
+    @staticmethod
+    def _popen_kwargs():
+        """Windows children get their own console process group so a later
+        CTRL_BREAK_EVENT can reach them (and only them) for graceful stops."""
+        if os.name == "nt":
+            return {"creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)}
+        return {}
+
+    @staticmethod
+    def _graceful_stop(proc):
+        if os.name == "nt":
+            proc.send_signal(signal.CTRL_BREAK_EVENT)
+        else:
+            proc.send_signal(signal.SIGTERM)
+
     def _listen(self, proc, timeout=15):
         """Block until the server prints NOVEL_AGENT_LISTENING; return base URL."""
         deadline = time.monotonic() + timeout
@@ -90,6 +105,7 @@ class ProcessOpsTests(unittest.TestCase):
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            **self._popen_kwargs(),
         )
         self.addCleanup(self._cleanup_proc, proc)
         return proc, self._listen(proc)
@@ -276,23 +292,15 @@ class ProcessOpsTests(unittest.TestCase):
 
     # -- graceful shutdown -------------------------------------------------
 
-    @unittest.skipUnless(
-        os.name == "posix",
-        "graceful SIGTERM delivery only exists on POSIX (Windows send_signal(SIGTERM) force-terminates)",
-    )
     def test_server_sigterm_shuts_down_cleanly(self):
         proc, base = self._spawn_server()
         self._get(f"{base}/healthz")
-        proc.send_signal(signal.SIGTERM)
+        self._graceful_stop(proc)
         rc = proc.wait(timeout=10)
-        self.assertEqual(rc, 0, "SIGTERM should trigger a graceful exit (rc=0)")
+        self.assertEqual(rc, 0, "graceful stop should exit with rc=0")
 
-    @unittest.skipUnless(
-        os.name == "posix",
-        "graceful SIGTERM delivery only exists on POSIX (Windows send_signal(SIGTERM) force-terminates)",
-    )
     def test_worker_sigterm_shuts_down_cleanly(self):
-        # An idle worker on an empty queue must drain promptly on SIGTERM.
+        # An idle worker on an empty queue must drain promptly on graceful stop.
         proc = subprocess.Popen(
             [sys.executable, "-m", "novel_agent.worker"],
             cwd=ROOT,
@@ -300,6 +308,7 @@ class ProcessOpsTests(unittest.TestCase):
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            **self._popen_kwargs(),
         )
         self.addCleanup(self._cleanup_proc, proc)
         deadline = time.monotonic() + 15
@@ -312,9 +321,9 @@ class ProcessOpsTests(unittest.TestCase):
             if not line and proc.poll() is not None:
                 break
         self.assertTrue(started, "worker never logged its started banner")
-        proc.send_signal(signal.SIGTERM)
+        self._graceful_stop(proc)
         rc = proc.wait(timeout=10)
-        self.assertEqual(rc, 0, "SIGTERM should trigger a graceful worker exit (rc=0)")
+        self.assertEqual(rc, 0, "graceful stop should exit worker with rc=0")
 
 
 if __name__ == "__main__":
