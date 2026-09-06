@@ -224,10 +224,24 @@
 - 冒烟：服务端正常启动，`/api/events` 缺 `novel_id` 返回 400，前端静态资源 200；
   SSE 端点真连接实测逐帧与游标语义通过（`test_streaming`）。
 
-### 已知（既有、非本次引入）
+### Windows 本机测试修正（提交 f32a54b / 7110975）
 
-Windows 本机仍剩环境性失败：3 个测试以默认 GBK 读 UTF-8 导出/静态文件、1 个依赖
-真实网络的超时重试用例、12 个 `test_http_ops` 因无 `python3` 命令（rc=9009）无法
-运行——这些在 Linux/UTF-8 + `python3` 环境下通过。另注：运行 v0.3.0 前需
+2026-09-06 深夜把 Windows 下剩余的 4 个环境性失败全部处理为可运行/如实标注：
+
+- **3 个 GBK 失败**：`test_novel_agent.py` 中对 UTF-8 导出/静态文件的读取显式加
+  `encoding="utf-8"`（导出 TXT 2 处、`static/index.html` 1 处），Windows 默认 GBK
+  不再误读。
+- **`test_deepseek_timeout_retries`**：根因是 `Config(...)` 硬编码 Linux 路径
+  `ca_bundle='/etc/ssl/cert.pem'`，Windows 上 `ssl.create_default_context` 抛
+  `FileNotFoundError`（`OSError` 子类）被误分类为 `tcp_connection_error` 且 3 次
+  重试全败；去掉该 Linux 专属参数后测试在注入 opener 上跨平台通过（非网络依赖）。
+- **`test_http_ops` 12 个进程测试**：`python3` 命令改为 `sys.executable`
+  （Linux 下同值，纯跨平台改进），子进程在本机即可拉起；其中 2 个 SIGTERM 优雅
+  退出用例在 Windows 下语义不适用（`send_signal(SIGTERM)` 走 `TerminateProcess`，
+  处理器收不到信号），用 `@skipUnless(os.name == "posix", ...)` 如实跳过，Linux
+  上仍完整执行。
+
+验证：Windows 本机全量 `python -m unittest discover -s tests` = **Ran 136 tests,
+OK (skipped=2)**；`compileall` 与 `git diff --check` 通过。另注：运行 v0.3.0 前需
 `python -m pip install -e .`（自动带 `httpx`/`tenacity`）。
 
