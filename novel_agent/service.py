@@ -17,16 +17,31 @@ class NovelService:
 
     @staticmethod
     def compact_bible(bible, limit=14000):
-        """Keep prompt context bounded while retaining facts needed for the next chapter."""
-        if not isinstance(bible,dict): return {}
-        selected={}
-        for key in ('title','genre','mainline','finalGoal','currentPosition','nextStageGoal','forbiddenContent','worldRules','characters','timeline','foreshadowing'):
-            value=bible.get(key)
-            if isinstance(value,list): value=value[:20]
-            elif isinstance(value,str): value=value[:2000]
-            selected[key]=value
-        encoded=json.dumps(selected,ensure_ascii=False)
-        return json.loads(encoded) if len(encoded)<=limit else {'contextTruncated':True,'facts':encoded[:max(0,limit-100)]}
+        """Keep the prompt context bounded while retaining every native bible fact.
+
+        Earlier versions whitelisted a fixed template key set, silently dropping
+        the keys real novels actually use (``protagonist``, ``mainCharacters``,
+        ``storyArcs``, ...) and injecting nulls that starved the model of
+        role/arc context. Every top-level key now survives with bounded
+        truncation; only an extreme over-budget bible degrades to a truncated
+        facts blob flagged ``contextTruncated`` (a budget overflow, never a
+        silent key filter).
+        """
+        if not isinstance(bible, dict):
+            return {}
+
+        def _bounded(value):
+            if isinstance(value, list):
+                return [_bounded(item) for item in value[:20]]
+            if isinstance(value, dict):
+                return {key: _bounded(child) for key, child in value.items()}
+            if isinstance(value, str):
+                return value[:2000]
+            return value
+
+        compact = {key: _bounded(value) for key, value in bible.items()}
+        encoded = json.dumps(compact, ensure_ascii=False)
+        return compact if len(encoded) <= limit else {'contextTruncated': True, 'facts': encoded[:max(0, limit - 100)]}
     def process(self,job):
         novel,recent,bible,skill=self.context(job['novel_id'],job['chapter_number']); self.store.set_status(job['novel_id'],job['chapter_number'],'PLANNING')
         if novel['paused']:
@@ -51,7 +66,11 @@ class NovelService:
             if json_failure: detail += '; first_response_summary='+first_failure
             self.store.record_usage(job,self.config.model,'novel-writer@1','failed',detail)
             self.store.fail_job(job,detail,0 if json_failure else self.config.max_job_attempts); return False
-        self.store.set_status(job['novel_id'],job['chapter_number'],'REVIEWING'); rules=bible.get('styleRules',{}) if isinstance(bible,dict) else {}; target=rules.get('chapterLength',0) if isinstance(rules,dict) else 0; result=review(output,bible,recent,target if isinstance(target,int) else 0)
+        self.store.set_status(job['novel_id'],job['chapter_number'],'REVIEWING'); rules=bible.get('styleRules',{}) if isinstance(bible,dict) else {}; target=rules.get('chapterLength',0) if isinstance(rules,dict) else 0
+        # Consistency checks run against the authoritative native bible (all keys,
+        # untruncated) so registered native-schema characters and canon facts are
+        # never misread because they happened to fall outside the prompt digest.
+        result=review(output, novel['story_bible'], recent, target if isinstance(target,int) else 0)
         proposed={'currentChapter':job['chapter_number'],'stateChanges':output.get('stateChanges',[]),'events':output.get('eventsIntroduced',[]),'foreshadowingResolved':output.get('foreshadowingResolved',[])}
         self.store.save_generation(job,output,raw,result,usage,proposed)
         if result['passed'] and self.config.auto_export_txt:

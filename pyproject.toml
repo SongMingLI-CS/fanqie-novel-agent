@@ -1,8 +1,33 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "novel-agent"
-version = "0.1.0"
+version = "0.2.0"
 description = "Long-running, review-gated novel writing agent"
+readme = "README.md"
 requires-python = ">=3.11"
+license = { text = "MIT" }
+keywords = ["novel", "writing", "agent", "deepseek", "sqlite"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: No Input/Output (Daemon)",
+    "Intended Audience :: End Users/Desktop",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Text Processing :: Markup",
+]
+
+[project.scripts]
+novel-agent-server = "novel_agent.server:main"
+novel-agent-worker = "novel_agent.worker:main"
+novel-agent-ops = "novel_agent.ops:main"
+
+[tool.setuptools]
+packages = ["novel_agent"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

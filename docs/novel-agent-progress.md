@@ -115,3 +115,61 @@
 - `make lint && make typecheck && make test && make build`：25/25 测试通过。
 - 并发锁验证：Worker 使用 `BEGIN IMMEDIATE`，每个并发槽使用独立连接；未接入真实 DeepSeek，未伪造外部服务结果。
 - HTTP 冒烟：`GET /` 与 `POST /api/novels` 通过；过程创建的临时 SQLite 已移出仓库。
+
+## 2026-09-04：前端全面重做（错误清晰化 + 界面美化）
+
+状态：完成。后端 API 与状态机保持不变，仅重写 `static/index.html`（单文件，约 176 → 1032 行）。
+
+- 诊断根因：当时 `.env` 中 `DEEPSEEK_API_KEY` 为空，生成任务连续失败 6 次、错误为 `DEEPSEEK_API_KEY is not configured`；旧页面既无轮询也不显示 Job 错误，用户在浏览器上完全看不到原因，因此误以为系统不可用。
+- 新增「问题横幅」：由失败的 Job/Usage 自动推导展示位（缺 API Key → 醒目配置类横幅，给出补齐 `.env`、重启 server/worker 的分步修复指引）；连接状态、鉴权（Bearer 令牌）、深浅色主题均可在页头切换并记忆。
+- 状态徽章：章节与任务按状态着色（`PLANNING/GENERATING/DRAFT_READY/WAITING_APPROVAL/FAILED…`），章节卡片内直接展示审查结果（得分/issue/blocking）、字数、时间；错误框内联在对应卡片上，并提供「重试生成」。
+- 任务看板：展示 Job 尝试次数、错误与队列时间；用量面板展示每次调用模型/Token/耗时/状态。
+- 自动轮询刷新：有活跃 Job 时 1500ms、空闲 4000ms，`document.hidden` 时暂停；带变更检测避免无效重渲染。
+- 错误语义：`explainError()` 把后端机器错误串映射为中文分类（配置/http 401/429/dns/tls/连接超时/暂停等）与修复建议；审查阻断码也有对应中文提示。
+- 验证：`node --check` 通过（33KB）；无头 DOM 桩连真实 API 冒烟通过——`boot-ok`、横幅命中「缺少 DeepSeek API Key」、章节/Job/用量面板均渲染出失败章节与配置错误、连接状态「服务已连接」。
+
+## 2026-09-04：真实调用排障闭环（API Key → TLS → Reviewer 崩溃 → 横幅误报）
+
+状态：完成。真实小说 `7bffa7be-3f2a-4bc2-b7ea-b9169ea99f6d`（穿越异世界锻炼成为最强的我…）第 1 章已端到端真实生成成功；前端横幅对「已修复的历史失败」不再误报。
+
+- **根因一（API Key“读不到”）**：`.env` 第 1 行 `DEEPSEEK_API_KEY` 磁盘上确实为空（编辑缓冲未保存）。用户按 `Cmd+S` 保存后验证长度为 35；环境变量只在进程启动时读取，因此保存后必须重启 server 与 worker 才生效。
+- **额外配置**：`.env` 中意外出现非空 `NOVEL_AUTH_TOKEN` 导致全部 API 返回 401；按用户说明清空并重启，恢复免鉴权本机访问。
+- **根因二（TLS 证书失败 `tls_error`）**：Homebrew Python 缺少 CA bundle（`/opt/homebrew/etc/openssl@3` 为空、未装 certifi），`SSLCertVerificationError: unable to get local issuer certificate`；`/etc/ssl/cert.pem` 验证 DeepSeek（TLS 1.3）通过。客户端本就支持 `DEEPSEEK_CA_BUNDLE`（`deepseek.py` 的 `ssl.create_default_context(cafile=...)`），故只在 `.env` 写入 `DEEPSEEK_CA_BUNDLE=/etc/ssl/cert.pem` 后重启即修复，无代码改动。
+- **根因三（Reviewer 崩溃，内容丢失）**：该小说 StoryBible 使用 `protagonist/mainCharacters/storyArcs` 字段集，而 `service.compact_bible()` 固定输出另一套键并把缺失字段填 `None`；`reviewer.review()` 迭代 `bible.get('characters',[])` 等时对 `None` 抛 `TypeError`，导致一次已成功付费调用的产物在 `save_generation` 前丢失，Job 卡在 `RUNNING`、章节卡在 `REVIEWING`。修复：在 `reviewer.review()` 顶部把任意非 list 的 bible 区块防御性置空列表；该真实 Job 已通过 `POST /api/jobs/<id>/cancel` 恢复后重新排队。
+- **前端横幅误报修复**：用量日志是追加式的，历史失败会一直保留；旧 `updateBanner()` 会把这些历史失败当作“当前问题”持续弹「缺少 DeepSeek API Key——生成功能当前不可用」。新增按 Job 判定的“已解决”规则：同一 Job 若存在更新的 `succeeded` 用量记录，则该 Job 更早的失败不再作为横幅来源；真正仍未解决的失败（如从未成功、或成功之后再次失败）仍会照常展示。为匹配该语义，把原 `test_api_key_not_in_frontend`（断言 HTML 不含字面 `DEEPSEEK_API_KEY`）改为 `test_frontend_exposes_no_api_secret`（页面允许出现环境变量名用于修复指引，但绝不允许真实/形似 `sk-…` 的密钥）。
+- 验证：
+  - 真实第 1 章《穿越之始》已保存为 `WAITING_APPROVAL`，正文 1,569 字符；自动审查通过、得分 100、无 blocking；Job `16863d63…` 状态 `SUCCEEDED`（attempts=10）；用量成功记录 `deepseek-v4-flash`（in 1,320 / out 1,612 / 22,056ms）。
+  - `python3 -m unittest discover -s tests`：41/41 通过；`python3 -m compileall -q novel_agent tests` 通过。
+  - 无头 DOM 桩强制选中该真实小说后：`banner-len=0`、无「缺少 DeepSeek API Key」；章节卡片渲染《穿越之始 / 待人工批准 / 1,569 字 / deepseek-v4-flash》。
+  - 负向控制：从未成功的小说 `7e90571e-…`（历史 `DEEPSEEK_API_KEY is not configured`）仍正确弹出配置横幅，证明修复不会掩盖仍存在的真实问题。
+- 备注（未处理的设计漂移）：`compact_bible()` 用固定键集压缩 StoryBible，会丢弃该小说真实的 `mainCharacters/protagonist` 等字段并注入 null，使模型缺少角色上下文；reviewer 防御补丁只保证不崩溃，未登记角色仍只产生 warning。后续建议让压缩与审查直接消费小说原生 bible 键，而非固定模板键。
+
+## 2026-09-04：正确性 → 可观测性 → 安全三波收尾（工业级化）
+
+状态：完成。按用户「以上全部，按正确性→可观测性→安全的顺序逐个推进」推进，验证后共跑通模块测试与进程级 HTTP 测试。
+
+### ① 正确性：消除 compact_bible / reviewer 的模板键设计漂移
+
+针对上面「未处理的设计漂移」备注做根治，而非再加防御补丁：
+
+- `service.compact_bible()` 重写：不再用固定模板白名单，改为**保留 StoryBible 全部原生顶层键**的有界递归截断（list 取前 20、str 取前 2000、dict 递归所有键）；仅在整体超过预算（默认 14000 字符）时降级为 `{'contextTruncated': True, 'facts': 截断串}`，不再注入任何 `None` 模板键。
+- `service.process()` 审查阶段改为对**完整权威原生 bible**（`novel['story_bible']`，不截断）做一致性校验，而不是压缩摘要；提示词仍用有界压缩版。
+- `reviewer.review()` 重写角色/规则检查：新增 `_walk()` 与 `_registered_names()`，用 set 成员判断识别原生 schema 的角色（`protagonist` dict、`mainCharacters`、`supportingCast` 等任意含 `name` 的节点），消除对原生角色 `unregistered_character` 的误报；`unauthorized_world_rule` / `timeline_event_redefinition` / `foreshadowing_not_open` 等规范冲突仍按 key 阻断。
+- 回归测试 6 条（原生键保留/不注入 null/超限降级/原生角色被识别/规范冲突仍阻断/端到端 process 用原生 bible 审查）全部通过。
+
+### ② 可观测性：审计轨迹 + 运维指标 + DB 维护/备份 CLI
+
+- `store.py` 新增只读 `audit_log` 追加表与 `record_audit()`（尽力而为，审计写失败绝不影响主操作），并在 create_novel / update_bible / cancel_job / rewrite_chapter / record_export / manual_publish 记录 `novel_created / bible_updated / job_cancelled / chapter_rewritten / chapter_exported / chapter_published`。
+- 新增只读聚合 `Store.metrics()`（novels/chapters/jobs/usage/byModel/exports/publishes/storyBibleVersions/auditEvents）与 `Store.usage_series(days)`（按日、零填充、窗口 1–90 天）与 `Store.audit_trail(limit)`。
+- 新增鉴权保护（`/api/*` 之下）的 `GET /api/ops/metrics`、`/api/ops/usage?days=`、`/api/ops/audit?limit=`。
+- 新增零依赖运维 CLI `novel_agent/ops.py`（注册 `novel-agent-ops` console script）：`stats`（打印指标+日趋势+磁盘占用）、`backup`（SQLite 在线备份 API，可边跑边备份，`--force` 覆盖）、`vacuum`（WAL checkpoint + VACUUM）。
+- 测试：Store 层 10 条（审计顺序/限长/指标/发布与导出/日趋势）+ HTTP `/api/ops/*` 端点测试全部通过。
+
+### ③ 安全：鉴权加固、响应头、请求体上限、路径穿越复核、密钥脱敏复核
+
+- 请求体上限复核：`_read_body` 既有 1MB/413 `payload_too_large` 上限；新增**负 Content-Length 拒绝**（400），防止 `read(负数)` 读到 EOF 造成挂起。
+- 鉴权加固（`auth.py` 重写）：Bearer 比较改为**对两侧 SHA-256 摘要做 `hmac.compare_digest`**，不泄露令牌长度；前缀必须严格 `Bearer `；新增**按客户端进程内失败节流**（60 秒窗口内第 5 次起指数退避 sleep，封顶 2 秒，成功后清空该客户端计数），`reset_throttle()` 供测试与轮换令牌后调用。
+- 安全响应头：所有 JSON 与静态响应加 `X-Content-Type-Options: nosniff`、`X-Frame-Options: DENY`、`Referrer-Policy: no-referrer`（`Cache-Control: no-store` 原本已有）。
+- 路径穿越复核：`_serve_static` 的 `resolve()` 包含性检查正确；补 `\x00` 空字节守卫（404），并加编码穿越回归测试（`%2e%2e`/`..%2f` 均 404，绝不泄漏 static 之外文件）。
+- 密钥脱敏复核：`Config.__repr__` 只显示 `auth=on/off`；请求日志仅 method/path/status/duration，不落鉴权头/请求体；DeepSeek 日志不记录 API key（既有测试 `test_failure_logs_never_include_api_key` 与 `test_repr_hides_no_auth_state` 继续通过）。
+- 测试：`tests/test_auth.py` 6 条单测 + HTTP 层（配置令牌后 API 401/200、健康与静态保持开放、413 上限、安全头、路径穿越）全部通过。

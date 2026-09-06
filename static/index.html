@@ -1,13 +1,1086 @@
 <!doctype html>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Novel Agent</title>
-<style>body{font:15px system-ui;max-width:1100px;margin:2rem auto;padding:0 1rem}button{margin:.25rem;padding:.45rem .7rem}textarea{width:100%;min-height:14rem}article,section{border:1px solid #ddd;border-radius:8px;padding:1rem;margin:1rem 0}pre{white-space:pre-wrap;background:#f5f5f5;padding:1rem}</style>
-<main><h1>Novel Agent</h1><p>半自动流程：生成 → 审查 → 人工审核 → 导出 → 目标平台手动发布 → 回系统确认。</p>
-<section><label>小说 <select id="novels"></select></label> <button id="refresh">刷新</button> <button id="pause">暂停/继续</button> <button id="generate">生成下一章</button></section>
-<section><h2>Story Bible</h2><textarea id="bible"></textarea><button id="saveBible">保存新版本</button></section>
-<section><h2>章节</h2><div id="chapters">加载中…</div></section><pre id="error"></pre></main>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Novel Agent · 长篇小说自动创作控制台</title>
+<style>
+  :root{
+    --bg:#f4f6fb; --surface:#ffffff; --surface-2:#f8fafc; --border:#e4e8f1; --border-strong:#d3daea;
+    --text:#1c2333; --muted:#64708a; --faint:#8b95ab;
+    --primary:#4f6ef7; --primary-strong:#3b5bdb; --on-primary:#fff; --primary-weak:#eaefff;
+    --ring:rgba(79,110,247,.35);
+    --ok:#12a150; --ok-weak:#e4f7ec; --warn:#c7741d; --warn-weak:#fdf2e2;
+    --bad:#d9433f; --bad-weak:#fdeceb; --info:#2f6fed; --info-weak:#e8f0fe;
+    --active:#2f6fed; --pending:#7d8aa5; --approval:#d97706; --draft:#0d9488; --exported:#7c3aed;
+    --published:#16a34a; --failed:#dc2626; --cancelled:#9aa3b5;
+    --radius:14px; --radius-sm:10px; --shadow:0 1px 2px rgba(20,28,50,.05),0 6px 20px rgba(20,28,50,.06);
+    --shadow-lg:0 12px 40px rgba(20,28,50,.14);
+    --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,"SF Mono",monospace;
+  }
+  html[data-theme="dark"]{
+    --bg:#0d1017; --surface:#151a24; --surface-2:#1a202d; --border:#252d3c; --border-strong:#343e52;
+    --text:#e6eaf3; --muted:#9aa5ba; --faint:#6c778c;
+    --primary:#6c88ff; --primary-strong:#8aa2ff; --primary-weak:#232a44;
+    --ring:rgba(108,136,255,.4);
+    --ok:#34d07c; --ok-weak:#123a26; --warn:#f0a854; --warn-weak:#3a2a12;
+    --bad:#ff6b66; --bad-weak:#3c1c1c; --info:#6ea2ff; --info-weak:#1c2a45;
+    --shadow:0 1px 2px rgba(0,0,0,.3),0 6px 20px rgba(0,0,0,.25);
+    --shadow-lg:0 14px 44px rgba(0,0,0,.5);
+  }
+  *{box-sizing:border-box}
+  html{-webkit-text-size-adjust:100%}
+  body{
+    margin:0; background:var(--bg); color:var(--text);
+    font:15px/1.65 -apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB","Microsoft YaHei",system-ui,sans-serif;
+    transition:background .2s,color .2s;
+  }
+  a{color:var(--primary)}
+  button{font:inherit;cursor:pointer}
+  code,kbd{font-family:var(--mono);font-size:.86em}
+  .wrap{max-width:1180px;margin:0 auto;padding:22px 20px 80px}
+  .mono{font-family:var(--mono)}
+
+  /* ---------- top banner ---------- */
+  #banner{margin-bottom:16px}
+  .banner{display:flex;gap:14px;align-items:flex-start;border:1px solid;border-radius:var(--radius);padding:14px 16px;box-shadow:var(--shadow)}
+  .banner .b-icon{font-size:22px;line-height:1.3}
+  .banner .b-body{flex:1;min-width:0}
+  .banner .b-title{font-weight:700;margin-bottom:4px}
+  .banner .b-msg{color:var(--text);white-space:pre-wrap}
+  .banner .b-fix{margin-top:8px;background:var(--surface-2);border:1px dashed var(--border-strong);border-radius:var(--radius-sm);padding:10px 12px;font-size:13.5px}
+  .banner .b-fix code{display:block;overflow:auto}
+  .banner.kind-config{border-color:var(--bad);background:linear-gradient(180deg,var(--bad-weak),transparent 120%)}
+  .banner.kind-config .b-title{color:var(--bad)}
+  .banner.kind-http{border-color:var(--warn);background:linear-gradient(180deg,var(--warn-weak),transparent 120%)}
+  .banner.kind-http .b-title{color:var(--warn)}
+  .banner.kind-offline{border-color:var(--warn);background:linear-gradient(180deg,var(--warn-weak),transparent 120%)}
+  .banner.kind-offline .b-title{color:var(--warn)}
+  .banner.kind-other{border-color:var(--info);background:linear-gradient(180deg,var(--info-weak),transparent 120%)}
+  .banner.kind-other .b-title{color:var(--info)}
+  .banner .b-close{margin-left:auto;border:0;background:transparent;color:var(--muted);font-size:18px;line-height:1;padding:2px 6px}
+  .banner .b-close:hover{color:var(--text)}
+
+  /* ---------- header ---------- */
+  header.top{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin:6px 2px 18px;flex-wrap:wrap}
+  .brand{display:flex;align-items:center;gap:14px}
+  .brand .logo{width:46px;height:46px;border-radius:13px;display:grid;place-items:center;font-size:24px;
+    background:linear-gradient(135deg,var(--primary),#8b5cf6);color:#fff;box-shadow:0 6px 16px rgba(79,110,247,.4)}
+  .brand h1{margin:0;font-size:22px;letter-spacing:.2px}
+  .brand .sub{margin:3px 0 0;color:var(--muted);font-size:13px}
+  .brand .flow-tag{display:inline-flex;align-items:center;gap:4px;margin-top:6px;font-size:12px;color:var(--muted)}
+  .brand .flow-tag b{color:var(--primary-strong)}
+  .hdr-actions{display:flex;align-items:center;gap:10px}
+  .icon-btn{width:38px;height:38px;border-radius:10px;border:1px solid var(--border);background:var(--surface);color:var(--muted);font-size:17px;display:grid;place-items:center;transition:.15s}
+  .icon-btn:hover{color:var(--primary);border-color:var(--primary);box-shadow:var(--shadow)}
+  details.conn{margin:0}
+  details.conn>summary{list-style:none;cursor:pointer}
+  details.conn>summary::-webkit-details-marker{display:none}
+  .conn-pop{position:absolute;right:20px;top:74px;z-index:40;width:min(360px,92vw);background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow-lg);padding:16px}
+  .conn-pop h3{margin:0 0 4px;font-size:15px}
+  .conn-pop p{margin:0 0 12px;color:var(--muted);font-size:13px}
+  .conn-pop .row{display:flex;gap:8px}
+  .conn-pop input{flex:1;min-width:0}
+  .pill{display:inline-flex;align-items:center;gap:5px;border:1px solid var(--border);background:var(--surface);color:var(--muted);
+    border-radius:999px;padding:3px 10px;font-size:12px;white-space:nowrap}
+  .pill .dot{width:7px;height:7px;border-radius:50%;background:var(--ok)}
+  .pill .dot.off{background:var(--bad)}
+  .pill.ok{color:var(--ok);border-color:rgba(18,161,80,.4)}
+  .pill.bad{color:var(--bad);border-color:rgba(217,67,63,.4)}
+
+  /* ---------- controls ---------- */
+  .card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow)}
+  .novel-bar{padding:14px 16px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:16px}
+  .novel-bar select{min-width:min(420px,60vw)}
+  .novel-bar .spacer{flex:1}
+  .btn{display:inline-flex;align-items:center;gap:7px;border:1px solid var(--border-strong);background:var(--surface);color:var(--text);
+    border-radius:10px;padding:8px 14px;font-size:14px;font-weight:600;transition:.15s;white-space:nowrap}
+  .btn:hover:not(:disabled){border-color:var(--primary);color:var(--primary);box-shadow:var(--shadow)}
+  .btn:disabled{opacity:.45;cursor:not-allowed}
+  .btn.primary{background:var(--primary);border-color:var(--primary);color:var(--on-primary)}
+  .btn.primary:hover:not(:disabled){background:var(--primary-strong);border-color:var(--primary-strong);color:var(--on-primary)}
+  .btn.success{background:var(--ok);border-color:var(--ok);color:#fff}
+  .btn.success:hover:not(:disabled){filter:brightness(1.07);color:#fff}
+  .btn.danger{color:var(--bad);border-color:rgba(217,67,63,.45)}
+  .btn.danger:hover:not(:disabled){background:var(--bad-weak);border-color:var(--bad);color:var(--bad)}
+  .btn.ghost{background:transparent;border-color:transparent;color:var(--muted)}
+  .btn.ghost:hover:not(:disabled){color:var(--primary);background:var(--primary-weak)}
+  .btn.sm{padding:5px 10px;font-size:12.5px;border-radius:8px}
+  .btn.xs{padding:3px 8px;font-size:12px;border-radius:7px}
+  select,input[type=text],input[type=password],textarea{
+    font:inherit;color:var(--text);background:var(--surface);border:1px solid var(--border-strong);
+    border-radius:10px;padding:8px 11px;transition:border-color .15s,box-shadow .15s}
+  select:focus,input[type=text]:focus,input[type=password]:focus,textarea:focus{
+    outline:none;border-color:var(--primary);box-shadow:0 0 0 3px var(--ring)}
+  textarea{width:100%;resize:vertical}
+  .novel-stats{display:flex;gap:8px;flex-wrap:wrap;margin:2px 0}
+  .chip{display:inline-flex;align-items:center;gap:6px;border-radius:8px;padding:3px 9px;font-size:12px;background:var(--surface-2);border:1px solid var(--border);color:var(--muted)}
+  .chip b{color:var(--text);font-weight:700}
+  .chip.warn{color:var(--warn);border-color:rgba(199,116,29,.4)}
+  .chip.ok{color:var(--ok);border-color:rgba(18,161,80,.35)}
+
+  /* ---------- layout ---------- */
+  .grid{display:grid;grid-template-columns:minmax(0,1fr) 380px;gap:18px;align-items:start}
+  @media(max-width:960px){.grid{grid-template-columns:1fr}}
+  .panel{margin-bottom:18px}
+  .panel .ph{padding:12px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px}
+  .panel .ph h2{margin:0;font-size:15.5px;display:flex;align-items:center;gap:8px}
+  .panel .ph .spacer{flex:1}
+  .panel .ph .hint{color:var(--faint);font-size:12px;font-weight:400}
+  .panel .pb{padding:14px 16px}
+  .empty{padding:26px 16px;text-align:center;color:var(--muted)}
+  .empty .big{font-size:34px;margin-bottom:6px}
+  .empty .btn{margin-top:10px}
+
+  /* ---------- chapter cards ---------- */
+  .chapters{display:flex;flex-direction:column;gap:12px}
+  .ch-card{border:1px solid var(--border);border-radius:var(--radius);background:var(--surface);box-shadow:var(--shadow);overflow:hidden;transition:border-color .15s}
+  .ch-card:hover{border-color:var(--border-strong)}
+  .ch-card.busy{border-color:var(--ring);box-shadow:0 0 0 3px var(--ring)}
+  .ch-head{display:flex;align-items:center;gap:10px;padding:12px 14px 10px;flex-wrap:wrap}
+  .ch-num{font-size:13px;font-weight:700;color:var(--faint);letter-spacing:.4px}
+  .ch-title{font-weight:700;font-size:15.5px;flex:1;min-width:120px}
+  .ch-title.untitled{color:var(--faint);font-weight:500}
+  .ch-body{padding:0 14px 6px;color:var(--muted);font-size:13.5px}
+  .ch-body .snippet{white-space:pre-wrap;word-break:break-word;margin:0 0 4px;max-height:96px;overflow:hidden;
+    -webkit-mask-image:linear-gradient(180deg,#000 60%,transparent);mask-image:linear-gradient(180deg,#000 60%,transparent)}
+  .ch-actions{display:flex;gap:6px;flex-wrap:wrap;padding:8px 14px 12px;border-top:1px dashed var(--border);margin-top:2px}
+  .ch-fail{background:var(--bad-weak);border:1px solid rgba(217,67,63,.35);border-radius:var(--radius-sm);padding:8px 12px;margin:2px 0 8px;font-size:13px;color:var(--text)}
+  .ch-fail .t{color:var(--bad);font-weight:700}
+  details.rev{margin:0 14px 4px}
+  details.rev summary{cursor:pointer;color:var(--muted);font-size:13px;list-style:none;display:inline-flex;align-items:center;gap:6px}
+  details.rev summary::-webkit-details-marker{display:none}
+  details.rev[open] summary{margin-bottom:8px}
+  .rev-box{border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--surface-2);padding:10px 12px;font-size:13px}
+  .rev-box .row{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:6px}
+  .score{display:inline-flex;align-items:center;gap:5px;font-weight:700;border-radius:999px;padding:1px 9px;font-size:12px}
+  .score.pass{background:var(--ok-weak);color:var(--ok)}
+  .score.fail{background:var(--bad-weak);color:var(--bad)}
+  ul.probs{margin:4px 0;padding-left:18px}
+  ul.probs li{margin:2px 0}
+  .p-bad{color:var(--bad)}
+  .p-warn{color:var(--warn)}
+
+  /* ---------- badges ---------- */
+  .badge{display:inline-flex;align-items:center;gap:5px;border-radius:999px;padding:2px 10px;font-size:12px;font-weight:700;white-space:nowrap}
+  .badge .spin{width:10px;height:10px}
+  .badge.b-active,.badge.b-PENDING,.badge.b-RUNNING{background:var(--info-weak);color:var(--info)}
+  .badge.b-WAITING_APPROVAL{background:var(--warn-weak);color:var(--warn)}
+  .badge.b-DRAFT_READY,.badge.b-REVIEWING,.badge.b-PLANNING,.badge.b-GENERATING{background:var(--ok-weak);color:var(--ok)}
+  .badge.b-EXPORTED{background:#f0ebff;color:var(--exported)}
+  .badge.b-PUBLISHED_MANUALLY,.badge.b-SUCCEEDED{background:var(--ok-weak);color:var(--ok)}
+  .badge.b-FAILED{background:var(--bad-weak);color:var(--bad)}
+  .badge.b-CANCELLED{background:var(--surface-2);color:var(--cancelled);border:1px solid var(--border)}
+  .spin{display:inline-block;width:14px;height:14px;border:2px solid currentColor;border-top-color:transparent;border-radius:50%;animation:sp .7s linear infinite;vertical-align:-2px}
+  @keyframes sp{to{transform:rotate(360deg)}}
+
+  /* ---------- jobs ---------- */
+  .job-row{display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid var(--border);font-size:13px}
+  .job-row:last-child{border-bottom:0}
+  .job-row .j-main{flex:1;min-width:0}
+  .job-row .j-kind{color:var(--faint);font-size:12px}
+  .job-row .j-err{color:var(--bad);font-size:12px;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .job-row .j-err.other{color:var(--warn)}
+  .job-row .j-meta{color:var(--faint);font-size:11.5px}
+
+  /* ---------- usage ---------- */
+  .usage-sum{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:12px}
+  .u-box{background:var(--surface-2);border:1px solid var(--border);border-radius:10px;padding:8px 10px;text-align:center}
+  .u-box .v{font-size:17px;font-weight:800;font-family:var(--mono)}
+  .u-box .k{font-size:11.5px;color:var(--muted);margin-top:2px}
+  table.tbl{width:100%;border-collapse:collapse;font-size:12.5px}
+  table.tbl th,table.tbl td{padding:6px 8px;border-bottom:1px solid var(--border);text-align:left;vertical-align:top}
+  table.tbl th{color:var(--faint);font-weight:600;white-space:nowrap}
+  .tbl-wrap{max-height:220px;overflow:auto}
+
+  /* ---------- bible ---------- */
+  .bible-meta{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px}
+  #bible{min-height:260px;font-family:var(--mono);font-size:12.5px;line-height:1.6}
+  .dirty-tag{display:none}
+  .dirty-tag.on{display:inline-flex}
+
+  /* ---------- modal ---------- */
+  #modal[hidden],#newPanel[hidden]{display:none}
+  #modal{position:fixed;inset:0;z-index:60;background:rgba(12,16,26,.5);backdrop-filter:blur(2px);
+    display:flex;align-items:center;justify-content:center;padding:20px}
+  .modal-box{width:min(720px,96vw);max-height:88vh;display:flex;flex-direction:column;background:var(--surface);
+    border:1px solid var(--border-strong);border-radius:16px;box-shadow:var(--shadow-lg);overflow:hidden;animation:pop .18s ease}
+  @keyframes pop{from{transform:scale(.96);opacity:0}to{transform:scale(1);opacity:1}}
+  .modal-box h3{margin:0;padding:14px 18px;border-bottom:1px solid var(--border);font-size:16px;display:flex;align-items:center;gap:8px}
+  .modal-box h3 .spacer{flex:1}
+  .modal-box .m-body{padding:16px 18px;overflow:auto}
+  .modal-box .m-foot{padding:12px 18px;border-top:1px solid var(--border);display:flex;justify-content:flex-end;gap:8px}
+  .modal-box label.f{display:block;margin-bottom:10px;font-size:13px;color:var(--muted);font-weight:600}
+  .modal-box input[type=text],.modal-box textarea{width:100%;margin-top:4px;font-weight:400}
+  .modal-box textarea.mono{font-family:var(--mono);font-size:13px}
+  .view-content{white-space:pre-wrap;word-break:break-word;font-size:14px;line-height:1.9;background:var(--surface-2);
+    border:1px solid var(--border);border-radius:10px;padding:14px}
+
+  /* ---------- toast ---------- */
+  #toasts{position:fixed;right:18px;bottom:18px;z-index:90;display:flex;flex-direction:column;gap:10px;max-width:min(400px,92vw)}
+  .toast{display:flex;gap:10px;align-items:flex-start;background:var(--surface);color:var(--text);border:1px solid var(--border-strong);
+    border-left:4px solid var(--info);border-radius:12px;box-shadow:var(--shadow-lg);padding:11px 14px;font-size:13.5px;animation:slide .25s ease}
+  @keyframes slide{from{transform:translateX(30px);opacity:0}to{transform:none;opacity:1}}
+  .toast.ok{border-left-color:var(--ok)}
+  .toast.warn{border-left-color:var(--warn)}
+  .toast.err{border-left-color:var(--bad)}
+  .toast .t-msg{flex:1;min-width:0}
+  .toast .t-close{border:0;background:transparent;color:var(--muted);cursor:pointer;font-size:15px;line-height:1}
+
+  .footer{color:var(--faint);font-size:12.5px;text-align:center;margin-top:26px;line-height:1.9}
+  .mt8{margin-top:8px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <!-- Persistent problem banner (config errors / offline / fatal) -->
+  <div id="banner" hidden></div>
+
+  <header class="top">
+    <div class="brand">
+      <div class="logo">✒️</div>
+      <div>
+        <h1>Novel Agent 控制台</h1>
+        <p class="sub">长篇小说自动创作 · DeepSeek 生成 / 自动审查 / 半自动人工发布</p>
+        <div class="flow-tag">流程：<b>生成</b> → <b>自动审查</b> → <b>人工批准</b> → <b>导出</b> → <b>平台手动发布</b> → <b>回系统确认</b></div>
+      </div>
+    </div>
+    <div class="hdr-actions">
+      <span id="connPill" class="pill" title="前端与服务端的连接状态"><span class="dot"></span> 检查连接…</span>
+      <details class="conn" id="connDetails">
+        <summary><button class="icon-btn" type="button" title="访问凭证设置">🔐</button></summary>
+        <div class="conn-pop">
+          <h3>访问凭证（可选）</h3>
+          <p>仅当服务端设置了 <code>NOVEL_AUTH_TOKEN</code> 时才需要填写；凭证会保存在本地浏览器。</p>
+          <label>Bearer Token：
+            <input id="authToken" type="password" placeholder="粘贴 NOVEL_AUTH_TOKEN" autocomplete="off">
+          </label>
+          <div class="row mt8">
+            <button id="saveToken" class="btn primary sm">保存凭证</button>
+            <button id="clearToken" class="btn sm">清除</button>
+          </div>
+        </div>
+      </details>
+      <button id="themeBtn" class="icon-btn" title="切换深色/浅色主题">🌙</button>
+    </div>
+  </header>
+
+  <!-- Novel selection & primary actions -->
+  <div class="card novel-bar">
+    <label class="pill" style="font-size:13px">📚 小说</label>
+    <select id="novels"><option value="">（没有小说，请先新建）</option></select>
+    <div class="novel-stats" id="novelStats"></div>
+    <div class="spacer"></div>
+    <label class="auto-refresh" style="display:inline-flex;align-items:center;gap:6px;font-size:13px;color:var(--muted)">
+      <input type="checkbox" id="autoPoll" checked> 自动刷新
+    </label>
+    <button id="refresh" class="btn" title="立即刷新数据">🔄 刷新</button>
+    <button id="pause" class="btn" hidden>⏸ 暂停写作</button>
+    <button id="resume" class="btn success" hidden>▶️ 继续写作（生成下一章）</button>
+    <button id="generate" class="btn primary">＋ 生成下一章</button>
+    <button id="toggleNew" class="btn">＋ 新建小说</button>
+  </div>
+
+  <!-- Create novel -->
+  <div id="newPanel" class="card panel" hidden style="margin-bottom:16px">
+    <div class="ph"><h2>📖 新建小说</h2><div class="spacer"></div><button id="newClose" class="btn ghost sm">关闭 ✕</button></div>
+    <div class="pb">
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px">
+        <label>书名（必填）<input id="newTitle" type="text" placeholder="例如：我在异世界装逼"></label>
+        <label>分类<input id="newGenre" type="text" placeholder="例如：异界幻想 / 无敌流"></label>
+        <label>卷名<input id="newVolume" type="text" placeholder="例如：第一卷"></label>
+      </div>
+      <p style="margin:12px 0 6px;color:var(--muted);font-size:13px">世界观 / 主线（JSON，可选，将作为初始 StoryBible 写入）：</p>
+      <textarea id="newBible" rows="6" class="mono" placeholder='{"mainline":"一句话主线","worldRules":[{"key":"magic","description":"设定"}]}'></textarea>
+      <div style="text-align:right;margin-top:10px"><button id="createNovel" class="btn primary">🚀 创建小说</button></div>
+    </div>
+  </div>
+
+  <!-- Main grid -->
+  <div class="grid">
+    <div class="main-col">
+      <div class="card panel">
+        <div class="ph"><h2>📄 章节</h2><span class="hint" id="chapterHint"></span>
+          <div class="spacer"></div><span id="busyTag" hidden><span class="badge b-active"><span class="spin"></span> 正在生成…</span></span>
+        </div>
+        <div class="pb"><div id="chapters" class="chapters"></div></div>
+      </div>
+    </div>
+
+    <aside class="side-col">
+      <!-- Story Bible -->
+      <div class="card panel">
+        <div class="ph"><h2>📜 Story Bible</h2><span class="hint" id="bibleVersion"></span></div>
+        <div class="pb">
+          <div class="bible-meta">
+            <span id="dirtyTag" class="chip warn dirty-tag">● 有未保存修改</span>
+          </div>
+          <textarea id="bible" spellcheck="false"></textarea>
+          <div style="display:flex;gap:8px;margin-top:10px">
+            <button id="saveBible" class="btn primary sm" style="flex:1">💾 保存新版本</button>
+            <button id="fmtBible" class="btn sm" title="格式化 JSON">格式化</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Recent jobs -->
+      <div class="card panel">
+        <div class="ph"><h2>⚙️ 最近任务</h2><span class="hint">自动重试中会显示排队/运行</span></div>
+        <div class="pb"><div id="jobs"></div></div>
+      </div>
+
+      <!-- Usage -->
+      <div class="card panel">
+        <div class="ph"><h2>📊 生成用量</h2></div>
+        <div class="pb"><div id="usage"></div></div>
+      </div>
+    </aside>
+  </div>
+
+  <div class="footer">
+    半自动发布提示：批准后仍需在目标平台手动发布，再回到章节卡片点「已人工发布」确认。<br>
+    首次生成前请确认项目根目录 <code>.env</code> 已配置 <code>DEEPSEEK_API_KEY</code>；修改环境变量后需重启 server 与 worker。
+  </div>
+</div>
+
+<!-- Modal -->
+<div id="modal" hidden>
+  <div class="modal-box" id="modalBox">
+    <h3 id="modalTitle">标题<span class="spacer"></span><button class="btn ghost sm" id="modalClose">✕</button></h3>
+    <div class="m-body" id="modalBody"></div>
+    <div class="m-foot" id="modalFoot"></div>
+  </div>
+</div>
+
+<div id="toasts"></div>
+
 <script>
-const $=id=>document.getElementById(id),state={};const esc=x=>String(x??'').replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));const err=e=>$('error').textContent=e;async function api(u,o){const r=await fetch(u,o),x=await r.json();if(!r.ok)throw Error(x.message||x.code);return x}
-async function refresh(){try{const xs=await api('/api/novels');$('novels').innerHTML=xs.map(x=>`<option value="${esc(x.id)}">${esc(x.title)}（第${esc(x.current_chapter)}章）</option>`).join('');state.novel=xs[0];if(!state.novel)return;$('bible').value=JSON.stringify(state.novel.story_bible,null,2);const cs=await api(`/api/novels/${state.novel.id}/chapters`),us=await api(`/api/novels/${state.novel.id}/usage`);$('chapters').innerHTML=cs.map(c=>`<article><b>第${esc(c.number)}章 ${esc(c.title||'(未生成)')}</b> <code>${esc(c.status)}</code><p>${esc((c.content||'').slice(0,160))}</p><details><summary>审查结果</summary><pre>${esc(JSON.stringify(c.review||{},null,2))}</pre></details>${c.content?`<button onclick="editDraft('${esc(c.id)}')">修改草稿</button><button onclick="reviewDraft('${esc(c.id)}')">重新审查</button><button onclick="exportDraft('${esc(c.novel_id)}',${esc(c.number)},'txt')">TXT</button><button onclick="exportDraft('${esc(c.novel_id)}',${esc(c.number)},'md')">Markdown</button><button onclick="exportDraft('${esc(c.novel_id)}',${esc(c.number)},'json')">JSON</button><button onclick="publishManual('${esc(c.novel_id)}',${esc(c.number)})">已人工发布</button>`:''}</article>`).join('')||'暂无章节';$('chapters').insertAdjacentHTML('beforeend',`<details><summary>生成用量</summary><pre>${esc(JSON.stringify(us,null,2))}</pre></details>`)}catch(e){err(e)}}
-async function editDraft(id){const content=prompt('输入新的正文');if(content!==null)await api('/api/chapters/'+id,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({content})});refresh()}async function reviewDraft(id){await api('/api/chapters/'+id+'/review',{method:'POST'});refresh()}async function exportDraft(n,nr,format){const x=await api('/api/chapters/x/export',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({novelId:n,chapterNumber:nr,format})});alert('已导出：'+x.path);refresh()}async function publishManual(n,nr){const platform=prompt('人工发布平台名称');if(platform)await api('/api/chapters/x/publish',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({novelId:n,chapterNumber:nr,platform,operator:'local-user',publishedAt:new Date().toISOString()})});refresh()}
-$('refresh').onclick=refresh;$('generate').onclick=async()=>{await api(`/api/novels/${state.novel.id}/chapters/generate`,{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});refresh()};$('pause').onclick=async()=>{await api(`/api/novels/${state.novel.id}/${state.novel.paused?'continue':'pause'}`,{method:'POST'});refresh()};$('saveBible').onclick=async()=>{try{await api(`/api/novels/${state.novel.id}/story-bible`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({storyBible:JSON.parse($('bible').value)})});refresh()}catch(e){err(e)}};refresh();
+"use strict";
+const $=id=>document.getElementById(id);
+const esc=x=>String(x??"").replace(/[&<>"']/g,c=>"&#"+({"&":38,"<":60,">":62,'"':34,"'":39}[c])+";");
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+
+const state={novels:[],novel:null,chapters:[],jobs:[],usage:[],sig:"",bibleDirty:false,busy:false};
+let pollTimer=null,lastConn=null,toastSeq=0;
+
+/* ---------------- status metadata ---------------- */
+const CH=Object.freeze({
+  PENDING:           {label:"排队中",   icon:"⏳", cls:"b-PENDING",  busy:true},
+  PLANNING:          {label:"规划中",   icon:"🧠", cls:"b-PLANNING", busy:true},
+  GENERATING:        {label:"生成中",   icon:"✍️", cls:"b-GENERATING",busy:true},
+  REVIEWING:         {label:"自动审查中",icon:"🔍", cls:"b-REVIEWING",busy:true},
+  DRAFT_READY:       {label:"已批准待导出",icon:"📄", cls:"b-DRAFT_READY",busy:false},
+  WAITING_APPROVAL:  {label:"待人工批准",icon:"📋", cls:"b-WAITING_APPROVAL",busy:false},
+  EXPORTED:          {label:"已导出",   icon:"📦", cls:"b-EXPORTED",busy:false},
+  PUBLISHED_MANUALLY:{label:"已人工发布",icon:"🚀", cls:"b-PUBLISHED_MANUALLY",busy:false},
+  FAILED:            {label:"失败",     icon:"✖️", cls:"b-FAILED",  busy:false},
+  CANCELLED:         {label:"已取消",   icon:"⊘",  cls:"b-CANCELLED",busy:false}
+});
+const JB=Object.freeze({
+  PENDING:   {label:"排队中",   icon:"⏳", cls:"b-PENDING",  busy:true},
+  RUNNING:   {label:"运行中",   icon:"⚡", cls:"b-RUNNING",  busy:true},
+  SUCCEEDED: {label:"成功",     icon:"✅", cls:"b-SUCCEEDED",busy:false},
+  FAILED:    {label:"失败",     icon:"✖️", cls:"b-FAILED",  busy:false},
+  CANCELLED: {label:"已取消",   icon:"⊘",  cls:"b-CANCELLED",busy:false}
+});
+
+/* Map raw review/job codes to friendly Chinese */
+const CODES={
+  missing_title:{t:"缺少章节标题",bad:1},
+  missing_content:{t:"正文为空",bad:1},
+  paragraph_format:{t:"段落格式不符合要求",bad:0},
+  word_count_out_of_range:{t:"字数不在设定区间",bad:0},
+  repeated_sentences:{t:"出现重复句子",bad:1},
+  recent_chapter_overlap:{t:"与最近章节内容重复",bad:1},
+  missing_chapter_goal:{t:"缺少本章目标",bad:1},
+  goal_not_completed:{t:"本章目标未完成",bad:1},
+  invalid_structured_output:{t:"模型输出无法解析为结构化章节",bad:1}
+};
+function codeMsg(c){
+  if(c.includes(":")){
+    const [k,v]=c.split(":");
+    if(k==="unauthorized_world_rule")return "使用了未登记的世界规则："+v;
+    if(k==="timeline_event_redefinition")return "重定义既有时间线事件："+v;
+    if(k==="foreshadowing_not_open")return "回收了尚未埋下的伏笔："+v;
+    if(k==="forbidden_content")return "命中违禁内容："+v;
+    if(k==="unregistered_character")return "出现未登记角色（建议补充）："+v;
+  }
+  return (CODES[c]&&CODES[c].t)||c;
+}
+
+/* Human-friendly explanation of a machine error string */
+function explainError(text){
+  if(!text)return null;
+  const t=String(text);
+  if(/DEEPSEEK_API_KEY is not configured/.test(t))
+    return {kind:"config",title:"缺少 DeepSeek API Key —— 生成功能当前不可用",
+      message:"检测到生成任务在真正调用模型前就被中断：服务端读取不到 DEEPSEEK_API_KEY（当前 .env 中该值为空）。这不是代码问题，属于环境配置问题。",
+      fix:"1) 编辑项目根目录的 .env，把 DEEPSEEK_API_KEY 填成你的真实密钥（形如 sk-xxxx…）。\n2) 保存后，重启 server 与 worker 两个进程，然后回到本页点「重试」或「生成下一章」。",
+      hint:"DEEPSEEK_API_KEY 不会入库，只从运行进程的环境变量读取；只改 .env 而不重启进程不会生效。"};
+  if(/DEEPSEEK_API_KEY has surrounding whitespace/.test(t))
+    return {kind:"config",title:"DEEPSEEK_API_KEY 首尾包含多余空格",message:"密钥不应带有空白字符，否则鉴权会失败。",fix:"把 .env 中该行改为 DEEPSEEK_API_KEY=sk-xxxx（去掉前后空格与引号），再重启进程。"};
+  if(/DEEPSEEK_BASE_URL is not configured/.test(t))
+    return {kind:"config",title:"缺少 DEEPSEEK_BASE_URL",fix:"在 .env 中加入 DEEPSEEK_BASE_URL=https://api.deepseek.com 后重启进程。"};
+  if(/DEEPSEEK_BASE_URL must be HTTPS/.test(t))
+    return {kind:"config",title:"DEEPSEEK_BASE_URL 必须是 HTTPS",fix:"把 DEEPSEEK_BASE_URL 改为 https:// 开头后重启进程。"};
+  if(/DEEPSEEK_MODEL is not configured/.test(t))
+    return {kind:"config",title:"缺少 DEEPSEEK_MODEL",fix:"在 .env 中设置 DEEPSEEK_MODEL（例如 deepseek-v4-flash）后重启进程。"};
+  if(/DEEPSEEK_THINKING must be enabled or disabled/.test(t))
+    return {kind:"config",title:"DEEPSEEK_THINKING 取值非法",fix:"DEEPSEEK_THINKING 只能为 enabled 或 disabled。"};
+  if(/DeepSeek HTTP 401/.test(t)||/http_401/.test(t))
+    return {kind:"config",title:"DeepSeek 鉴权失败（HTTP 401）",message:"API Key 无效、已过期或没有权限。",fix:"核对 .env 中的 DEEPSEEK_API_KEY 是否真实有效，更换后重启进程。"};
+  if(/DeepSeek HTTP 429/.test(t)||/http_429/.test(t))
+    return {kind:"http",title:"触发限流（HTTP 429）",message:"请求太频繁或额度不足。",fix:"稍等片刻再重试；如持续出现，请检查 DeepSeek 账户余额/额度。"};
+  if(/DeepSeek HTTP 400/.test(t)||/http_400/.test(t))
+    return {kind:"http",title:"请求被拒绝（HTTP 400）",message:"参数可能不被当前模型支持。",fix:"尝试切换模型/检查配置后重试。"};
+  if(/DeepSeek HTTP 404/.test(t)||/http_404/.test(t))
+    return {kind:"http",title:"接口或模型不存在（HTTP 404）",message:"请核对 DEEPSEEK_BASE_URL 与 DEEPSEEK_MODEL。",fix:"确认 Base URL 与模型名正确后重启进程。"};
+  if(/DNS/.test(t))return {kind:"http",title:"无法解析 DeepSeek 域名（DNS）",message:"当前网络无法解析 api.deepseek.com。",fix:"检查网络/代理设置后重试。"};
+  if(/TLS/.test(t))return {kind:"http",title:"TLS 证书校验失败",message:"HTTPS 握手或证书有问题。",fix:"若使用自定义代理/证书，请配置 DEEPSEEK_CA_BUNDLE 后重试。"};
+  if(/TCP connection failure|connection timeout|first byte timeout/.test(t))
+    return {kind:"http",title:"无法连接 DeepSeek（网络）",message:"建立连接或等待首包超时。",fix:"检查网络、防火墙或代理；如使用代理请确认其可用后重试。"};
+  if(/timeout|timed out/.test(t))return {kind:"http",title:"请求超时",message:"模型响应耗时超过设定上限。",fix:"可调大 NOVEL_REQUEST_TIMEOUT 后重试，或稍后再试。"};
+  if(/stream interrupted|empty message\.content|missing message\.content/.test(t))
+    return {kind:"other",title:"模型返回内容异常",message:"流被中断或返回了空内容。",fix:"点击「重试」再次生成。"};
+  if(/output_truncated|max_tokens/.test(t))
+    return {kind:"http",title:"输出被截断",message:"生成的正文超过 token 上限被截断。",fix:"可调大 NOVEL_MAX_CHAPTER_TOKENS 后重试。"};
+  if(/novel_is_paused|novel_paused/.test(t))
+    return {kind:"http",title:"小说当前处于暂停状态",message:"暂停中的小说不会新建生成任务。",fix:"点击「继续写作」恢复后重试。"};
+  return null;
+}
+function flattenError(text){
+  // A FAILED review job stores blocking issues as JSON list; parse when possible.
+  if(!text)return text||"";
+  const s=String(text).trim();
+  try{const v=JSON.parse(s);if(Array.isArray(v))return v.map(codeMsg).join("；");}catch(_){}
+  return s;
+}
+
+/* ---------------- toasts & banner ---------------- */
+function toast(msg,kind){
+  kind=kind||"info";
+  const el=document.createElement("div");
+  el.className="toast "+kind;
+  const icons={ok:"✅",info:"ℹ️",warn:"⚠️",err:"❌"};
+  el.innerHTML='<span>'+(icons[kind]||"ℹ️")+'</span><div class="t-msg"></div><button class="t-close">✕</button>';
+  el.querySelector(".t-msg").textContent=msg;
+  el.querySelector(".t-close").onclick=()=>el.remove();
+  $("toasts").appendChild(el);
+  while($("toasts").children.length>5)$("toasts").firstChild.remove();
+  setTimeout(()=>{el.style.opacity="0";el.style.transition="opacity .3s";setTimeout(()=>el.remove(),320);},5600);
+}
+let bannerDismissed=false;
+function setBanner(ex){
+  const box=$("banner");
+  if(!ex||bannerDismissed){box.hidden=true;box.innerHTML="";return;}
+  const kind=ex.kind||"other";
+  box.hidden=false;
+  box.className="banner kind-"+kind;
+  box.innerHTML='<div class="b-icon">'+(kind==="config"?"🚫":kind==="offline"?"📡":"⚠️")+'</div>'+
+    '<div class="b-body"><div class="b-title">'+esc(ex.title)+'</div>'+
+    (ex.message?'<div class="b-msg">'+esc(ex.message)+'</div>':'')+
+    (ex.fix?'<div class="b-fix"><div style="font-weight:700;margin-bottom:6px">🔧 如何修复</div><code>'+esc(ex.fix).replace(/\n/g,"<br>")+'</code></div>':'')+
+    (ex.hint?'<div style="margin-top:6px;font-size:12.5px;color:var(--faint)">'+esc(ex.hint)+'</div>':'')+
+    '</div><button class="b-close" title="知道了">✕</button>';
+  box.querySelector(".b-close").onclick=()=>{bannerDismissed=true;box.hidden=true;};
+}
+function resetBanner(){bannerDismissed=false;}
+
+/* ---------------- http ---------------- */
+function token(){return (localStorage.getItem("novelAuthToken")||"").trim();}
+async function request(u,o={}){
+  const headers=Object.assign({},o.headers||{});
+  const t=token();
+  if(t&&!headers["Authorization"])headers["Authorization"]="Bearer "+t;
+  if(o.body!==undefined&&!headers["Content-Type"])headers["Content-Type"]="application/json";
+  const opts=Object.assign({},o);opts.headers=headers;
+  let r;try{r=await fetch(u,opts);}catch(e){const er=new Error("无法连接本地服务端（"+e.message+"）");er.network=true;throw er;}
+  let data=null;try{data=await r.json()}catch(_){}
+  if(!r.ok){
+    const e=new Error((data&&(data.message||data.code))||("HTTP "+r.status));
+    e.status=r.status;e.data=data||{};throw e;
+  }
+  return {status:r.status,data};
+}
+async function api(u,o={}){return (await request(u,o)).data;}
+
+/* ---------------- time ---------------- */
+function timeAgo(iso){
+  if(!iso)return"—";
+  const d=new Date(iso);
+  if(isNaN(d))return"—";
+  const s=(Date.now()-d.getTime())/1000;
+  if(s<0)return"刚刚";
+  if(s<60)return Math.floor(s)+" 秒前";
+  if(s<3600)return Math.floor(s/60)+" 分钟前";
+  if(s<86400)return Math.floor(s/3600)+" 小时前";
+  if(s<86400*30)return Math.floor(s/86400)+" 天前";
+  return d.toLocaleDateString("zh-CN",{year:"numeric",month:"2-digit",day:"2-digit"});
+}
+function fmtDate(iso){if(!iso)return"—";const d=new Date(iso);return isNaN(d)?iso:d.toLocaleString("zh-CN",{hour12:false});}
+function fmtNum(n){return (n==null?0:n).toLocaleString("zh-CN");}
+
+/* ---------------- rendering helpers ---------------- */
+function badge(status,def){
+  const m=(CH[status]||JB[status])||def;
+  const spin=m.busy?'<span class="spin"></span>':'';
+  return `<span class="badge ${m.cls}">${spin}${m.icon} ${m.label}</span>`;
+}
+function readSel(){const v=$("novels").value;if(!v){state.novel=null;return;}state.novel=state.novels.find(x=>x.id===v)||null;}
+function hasActive(){return state.chapters.some(c=>CH[c.status]&&CH[c.status].busy)||state.jobs.some(j=>JB[j.status]&&JB[j.status].busy);}
+
+/* ---------------- main render ---------------- */
+function signature(){
+  const ns=state.novels.map(n=>[n.id,n.title,n.current_chapter,n.paused,n.story_bible_version].join("|")).join(";");
+  const cs=state.chapters.map(c=>[c.number,c.status,c.title||"",(c.content||"").length,(c.review&&c.review.score)||"",(c.review&&c.review.passed)?"1":"0",c.published_at||"",c.updated_at].join("|")).join(";");
+  const js=state.jobs.map(j=>[j.chapter_number,j.kind,j.status,j.attempts,j.updated_at].join("|")).join(";");
+  return ns+"#"+cs+"#"+js;
+}
+
+async function refresh(manual){
+  try{
+    const xs=await api("/api/novels");
+    const prev=state.novel?state.novel.id:"";
+    state.novels=xs;
+    const pick=xs.find(x=>x.id===prev)||(xs[0]||null);
+    $("novels").innerHTML=xs.length
+      ? xs.map(n=>`<option value="${esc(n.id)}">${esc(n.title)}（已到第 ${esc(n.current_chapter)} 章）</option>`).join("")
+      : '<option value="">（没有小说，请先新建）</option>';
+    if(pick){
+      state.novel=pick;$("novels").value=pick.id;
+      const [detail,cs,js,us]=await Promise.all([
+        api("/api/novels/"+pick.id),
+        api("/api/novels/"+pick.id+"/chapters"),
+        api("/api/novels/"+pick.id+"/jobs"),
+        api("/api/novels/"+pick.id+"/usage")
+      ]);
+      state.novel=detail;state.chapters=cs||[];state.jobs=js||[];state.usage=us||[];
+    }else{
+      state.novel=null;state.chapters=[];state.jobs=[];state.usage=[];
+    }
+    setConn(true);
+    updateBanner();
+    const sig=signature();
+    if(sig!==state.sig||manual){state.sig=sig;renderAll();}
+    updateBusyUI();
+  }catch(e){
+    setConn(false,e);
+    if(e.status===401)setBanner({kind:"config",title:"服务端要求访问凭证（401）",
+      message:"请点击右上角 🔐 输入服务端配置的 NOVEL_AUTH_TOKEN 并保存。",fix:"密钥由部署方提供；保存后凭证会自动附加到每个请求。"});
+    else if(e.network||e.status===undefined)
+      setBanner({kind:"offline",title:"无法连接本地服务端",message:"请确认服务端进程已在运行。",fix:"在项目根目录运行：\nset -a && source .env && set +a && python3 -m novel_agent.server\n（另开一个终端运行 python3 -m novel_agent.worker）"});
+    else toast("刷新失败："+e.message,"err");
+  }
+}
+
+function setConn(ok,err){
+  const pill=$("connPill");
+  if(ok){pill.innerHTML='<span class="dot"></span> 服务已连接';pill.classList.remove("bad");pill.classList.add("ok");}
+  else{pill.innerHTML='<span class="dot off"></span> 无法连接';pill.classList.remove("ok");pill.classList.add("bad");}
+}
+
+/* Surface config/fatal problem prominently when the backend tells us so */
+function updateBanner(){
+  if(bannerDismissed)return;
+  // The usage log is append-only: it keeps every historical failure. A failure
+  // only reflects the CURRENT state when the same job has not since succeeded —
+  // once a job later succeeds (API key / TLS / network fixed), its earlier failed
+  // attempts are history, so don't keep re-alarming about a problem that is gone.
+  const latestSucceeded=new Map(); // job_id -> newest succeeded usage time (ms)
+  for(const u of state.usage||[]){
+    if(u.job_id&&u.request_status==="succeeded"){
+      const t=Date.parse(u.created_at||"");
+      if(!Number.isNaN(t)&&t>(latestSucceeded.get(u.job_id)||0))latestSucceeded.set(u.job_id,t);
+    }
+  }
+  const stale=(job_id,at)=>{
+    if(!job_id)return false;
+    const ok=latestSucceeded.get(job_id);
+    if(ok==null)return false;
+    const t=Date.parse(at||"");
+    return !Number.isNaN(t)&&t<=ok;
+  };
+  // Look at failed generate jobs & failed usage entries for a human-readable root cause.
+  const sources=[];
+  for(const j of state.jobs)if(j.status==="FAILED"&&j.error)sources.push(j.error);
+  for(const u of state.usage)
+    if(u.request_status&&u.request_status!=="succeeded"&&u.error&&!stale(u.job_id,u.created_at))sources.push(u.error);
+  for(const c of state.chapters)if(c.status==="FAILED")sources.push(flattenError(c.review&&c.review.blockingIssues?JSON.stringify(c.review.blockingIssues):""));
+  let best=null;
+  for(const s of sources){const e=explainError(s);if(e&&e.kind==="config"){best=e;break;}}
+  if(!best)for(const s of sources){const e=explainError(s);if(e){best=e;break;}}
+  setBanner(best);
+}
+
+function renderAll(){
+  const n=state.novel;
+  renderNovelBar();
+  renderChapters();
+  renderJobs();
+  renderUsage();
+  renderBible();
+  renderChapterHint();
+}
+
+function renderNovelBar(){
+  const n=state.novel;
+  const stats=$("novelStats");
+  const gen=$("generate"),pause=$("pause"),resume=$("resume");
+  if(!n){
+    stats.innerHTML="";gen.hidden=false;gen.disabled=true;pause.hidden=true;resume.hidden=true;
+    return;
+  }
+  const paused=!!n.paused;
+  gen.hidden=paused;gen.disabled=paused||state.busy;
+  pause.hidden=paused;pause.disabled=state.busy;
+  resume.hidden=!paused;resume.disabled=false;
+  const parts=[`<span class="chip"><b>${esc(n.current_chapter)}</b> 章已发布确认</span>`,
+    `<span class="chip">StoryBible v${esc(n.story_bible_version)}</span>`,
+    `<span class="chip">更新于 ${esc(timeAgo(n.updated_at))}</span>`];
+  if(n.volume)parts.push(`<span class="chip">${esc(n.volume)}</span>`);
+  if(n.genre)parts.push(`<span class="chip">${esc(n.genre)}</span>`);
+  if(paused)parts.push('<span class="chip warn">⏸ 已暂停</span>');
+  stats.innerHTML=parts.join("");
+}
+
+function renderChapterHint(){
+  const n=state.novel;$("chapterHint").textContent=n?`共 ${state.chapters.length} 章`:"";
+}
+
+function chapterActions(c){
+  const acts=[];
+  const editable=["WAITING_APPROVAL","DRAFT_READY","EXPORTED","FAILED"];
+  if(c.content&&editable.includes(c.status)&&c.status!=="PUBLISHED_MANUALLY")
+    acts.push(`<button class="btn xs" onclick="openEdit('${esc(c.id)}')">✏️ 编辑正文</button>`);
+  if(c.content)
+    acts.push(`<button class="btn xs" onclick="viewChapter('${esc(c.id)}')">📖 查看</button>`);
+  if(c.content&&c.status!=="PUBLISHED_MANUALLY"&&c.status!=="CANCELLED")
+    acts.push(`<button class="btn xs" onclick="act('/api/chapters/${esc(c.id)}/review','{}','重新审查','重新审查完成')">🔍 重新审查</button>`);
+  if(c.content&&["WAITING_APPROVAL","DRAFT_READY"].includes(c.status)&&c.review&&c.review.passed)
+    acts.push(`<button class="btn xs success" onclick="act('/api/chapters/${esc(c.id)}/approve','{}','批准','已批准（待导出）')">✅ 批准</button>`);
+  if(c.content&&["WAITING_APPROVAL","DRAFT_READY","EXPORTED"].includes(c.status)&&c.review&&c.review.passed){
+    acts.push(`<button class="btn xs" onclick="exportChapter('${esc(c.id)}','${esc(c.novel_id)}',${c.number},'txt')">TXT</button>`);
+    acts.push(`<button class="btn xs" onclick="exportChapter('${esc(c.id)}','${esc(c.novel_id)}',${c.number},'md')">MD</button>`);
+    acts.push(`<button class="btn xs" onclick="exportChapter('${esc(c.id)}','${esc(c.novel_id)}',${c.number},'json')">JSON</button>`);
+  }
+  if(c.status==="EXPORTED")
+    acts.push(`<button class="btn xs" onclick="openPublish('${esc(c.id)}','${esc(c.novel_id)}',${c.number})">🚀 已人工发布</button>`);
+  if(c.status==="FAILED"&&!c.content&&c.novel_id)
+    acts.push(`<button class="btn xs danger" onclick="retryChapter('${esc(c.novel_id)}',${c.number})">↻ 重试生成</button>`);
+  // Serial overwrite rewrite: only unpublished chapters expose the button; the
+  // backend (and rewriteChapter) further restrict it to the newest draft so
+  // regenerating from the outline never breaks a later chapter that depends on it.
+  const n=state.novel;
+  const isBusy=!!(CH[c.status]&&CH[c.status].busy);
+  if(n&&!isBusy&&c.number>(n.current_chapter||0)){
+    acts.push(`<button class="btn xs danger" onclick="rewriteChapter('${esc(c.id)}')" title="删除本章全部内容并按 StoryBible 大纲重新生成（仅最新草稿章可用）">🗑 删除并重写</button>`);
+  }
+  return acts.join("");
+}
+
+function chapterCard(c){
+  const meta=CH[c.status]||{label:c.status,icon:"•",cls:"b-CANCELLED",busy:false};
+  const busy=meta.busy;
+  const title=c.title||(busy?"正在生成第 "+c.number+" 章…":"（尚未生成）");
+  let problems="";
+  if(c.status==="FAILED"&&(c.review&&c.review.blockingIssues&&c.review.blockingIssues.length)){
+    const arr=c.review.blockingIssues||[];
+    problems='<div class="ch-fail"><div class="t">⚠️ 自动审查未通过：</div><ul class="probs">'+arr.map(x=>'<li class="p-bad">'+esc(codeMsg(x))+'</li>').join("")+'</ul></div>';
+  }else if(c.status==="FAILED"&&!c.content){
+    const job=state.jobs.find(j=>j.chapter_number===c.number&&j.status==="FAILED");
+    const txt=job?flattenError(job.error):"";
+    problems='<div class="ch-fail"><div class="t">✖️ 本章生成失败</div><div>'+esc(txt)+'</div></div>';
+  }
+  let review="";
+  if(c.review&&(c.review.score!=null||(c.review.blockingIssues&&c.review.blockingIssues.length)||(c.review.issues&&c.review.issues.length)||(c.review.warnings&&c.review.warnings.length))){
+    const passed=c.review.passed;
+    const scoreCls=passed?"pass":"fail";
+    const issues=(c.review.issues||[]).map(x=>`<li class="p-warn">${esc(codeMsg(x))}</li>`);
+    const warnings=(c.review.warnings||[]).map(x=>`<li class="p-warn">${esc(codeMsg(x))}</li>`);
+    const blocking=(c.review.blockingIssues||[]).map(x=>`<li class="p-bad">${esc(codeMsg(x))}</li>`);
+    const list=[...blocking,...issues,...warnings];
+    review=`<details class="rev"><summary>🔎 查看审查结果（得分 ${esc(c.review.score)}${passed?" · 通过":" · 未通过"}）</summary>
+      <div class="rev-box"><div class="row">
+        <span class="score ${scoreCls}">${passed?"✅ 通过":"❌ 未通过"}</span>
+        <span class="score ${scoreCls}">得分 ${esc(c.review.score)}</span>
+        ${c.review.checkedAt?`<span style="color:var(--faint);font-size:12px">${esc(timeAgo(c.review.checkedAt))}</span>`:""}
+      </div>`+
+      (list.length?`<ul class="probs">${list.join("")}</ul>`:"<div style='color:var(--ok)'>无问题</div>")+
+      `</div></details>`;
+  }
+  const snippet=c.content?`<p class="snippet">${esc(c.content)}</p>`:"";
+  const metaLine=c.content
+    ? `<div style="color:var(--faint);font-size:12px;margin:2px 0 6px">正文约 ${fmtNum(c.content.length)} 字 · ${c.model?esc(c.model):""} · ${esc(timeAgo(c.generated_at||c.updated_at))}${c.publish_record&&c.publish_record.platform?" · 发布平台："+esc(c.publish_record.platform):""}</div>`
+    : `<div style="color:var(--faint);font-size:12px;margin:2px 0 6px">${esc(timeAgo(c.updated_at))}</div>`;
+  const actions=chapterActions(c);
+  return `<article class="ch-card ${busy?"busy":""}" data-number="${c.number}">
+    <div class="ch-head">
+      <span class="ch-num">第 ${c.number} 章</span>
+      <span class="ch-title ${c.title?"":"untitled"}">${esc(title)}</span>
+      ${badge(c.status)}
+    </div>
+    <div class="ch-body">${metaLine}${snippet}${problems}${review}</div>
+    ${actions?`<div class="ch-actions">${actions}</div>`:""}
+  </article>`;
+}
+
+function renderChapters(){
+  const box=$("chapters");
+  const n=state.novel;
+  if(!n){box.innerHTML='<div class="empty"><div class="big">📚</div>还没有选择小说<br><button class="btn primary sm" onclick="toggleNew()">＋ 新建小说</button></div>';return;}
+  if(!state.chapters.length){
+    box.innerHTML='<div class="empty"><div class="big">🖋️</div>这本小说还没有任何章节。<br>点击上方「＋ 生成下一章」开始创作第一章。</div>';
+    return;
+  }
+  box.innerHTML=state.chapters.map(chapterCard).join("");
+}
+
+function renderJobs(){
+  const box=$("jobs");
+  if(!state.novel){box.innerHTML='<div class="empty">选择小说后显示任务</div>';return;}
+  if(!state.jobs.length){box.innerHTML='<div class="empty">暂无生成任务</div>';return;}
+  box.innerHTML=state.jobs.slice(0,12).map(j=>{
+    const m=JB[j.status]||{label:j.status,icon:"•",cls:"b-CANCELLED",busy:false};
+    let err="";
+    if(j.status==="FAILED"){const ex=explainError(j.error);err=`<div class="j-err ${ex&&ex.kind==="config"?"":"other"}">${esc(flattenError(j.error))}</div>`;}
+    let actions="";
+    if((j.status==="PENDING"||j.status==="RUNNING")&&j.kind==="generate")
+      actions=`<button class="btn xs" onclick="act('/api/jobs/${esc(j.id)}/cancel','{}','取消任务','已取消该任务')">取消</button>`;
+    if(j.status==="FAILED"&&j.kind==="generate"&&j.novel_id)
+      actions=`<button class="btn xs danger" onclick="retryChapter('${esc(j.novel_id)}',${j.chapter_number})">重试</button>`;
+    return `<div class="job-row">
+      <div class="j-main">
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <span class="badge ${m.cls}">${m.icon} ${m.label}</span>
+          <span>第 ${j.chapter_number} 章 · <span class="j-kind">${esc(j.kind)}</span></span>
+        </div>
+        ${j.status==="FAILED"?(err+'<div class="j-meta">已尝试 '+j.attempts+' 次</div>'):(j.status==="PENDING"||j.status==="RUNNING"?'<div class="j-meta">第 '+j.attempts+' 次尝试 · 由 Worker 自动处理</div>':'')}
+        <div class="j-meta">${esc(timeAgo(j.updated_at))}</div>
+      </div>
+      ${actions}
+    </div>`;
+  }).join("");
+}
+
+function renderUsage(){
+  const box=$("usage");
+  if(!state.novel){box.innerHTML='<div class="empty">暂无用量数据</div>';return;}
+  if(!state.usage.length){box.innerHTML='<div class="empty">还没有调用记录</div>';return;}
+  const list=state.usage;
+  const tot=list.reduce((a,x)=>({in:(a.in||0)+(x.input_tokens||0),out:(a.out||0)+(x.output_tokens||0),ms:(a.ms||0)+(x.duration_ms||0)}),{});
+  const ok=list.filter(x=>x.request_status==="succeeded").length;
+  const failed=list.length-ok;
+  box.innerHTML=`<div class="usage-sum">
+      <div class="u-box"><div class="v">${fmtNum(list.length)}</div><div class="k">总调用</div></div>
+      <div class="u-box"><div class="v">${fmtNum(tot.in)}<span style="font-size:11px;color:var(--faint)"> / ${fmtNum(tot.out)}</span></div><div class="k">输入 / 输出 tokens</div></div>
+      <div class="u-box"><div class="v" style="color:${failed?'var(--bad)':'var(--ok)'}">${ok}${failed?'<span style="color:var(--bad)"> / '+failed+' 失败</span>':''}</div><div class="k">成功 / 失败</div></div>
+    </div>
+    <div class="tbl-wrap"><table class="tbl">
+      <tr><th>时间</th><th>模型</th><th>输入</th><th>输出</th><th>耗时</th><th>状态</th></tr>
+      ${list.slice(0,20).map(u=>{
+        const st=u.request_status==="succeeded"?'<span style="color:var(--ok)">成功</span>':'<span style="color:var(--bad)">失败</span>';
+        const err=u.request_status!=="succeeded"&&u.error?`<div style="color:var(--bad);font-size:11.5px">${esc(flattenError(u.error))}</div>`:"";
+        return `<tr><td style="white-space:nowrap">${esc(timeAgo(u.created_at))}</td>
+          <td>${esc(u.model||"—")}</td><td class="mono">${fmtNum(u.input_tokens)}</td>
+          <td class="mono">${fmtNum(u.output_tokens)}</td>
+          <td class="mono">${u.duration_ms?fmtNum(u.duration_ms)+"ms":"—"}</td>
+          <td>${st}${err}</td></tr>`;
+      }).join("")}
+    </table></div>`;
+}
+
+function renderBible(){
+  const n=state.novel;
+  $("bibleVersion").textContent=n?("v"+n.story_bible_version+" · 更新于 "+timeAgo(n.updated_at)):"";
+  $("saveBible").disabled=!n;
+  if(n&&!state.bibleDirty&&document.activeElement!==$("bible")){
+    $("bible").value=JSON.stringify(n.story_bible||{},null,2);
+  }
+  $("dirtyTag").classList.toggle("on",!!(state.bibleDirty&&n));
+}
+
+function updateBusyUI(){
+  const active=hasActive();
+  state.active=active;
+  $("busyTag").hidden=!active;
+  const gen=$("generate");
+  gen.disabled=!state.novel||!!state.novel.paused||state.busy;
+  $("pause").disabled=!state.novel||state.busy;
+}
+
+/* ---------------- actions ---------------- */
+async function act(url,body,doing,done){
+  const btn=event&&event.target;
+  if(btn){btn.disabled=true;}
+  try{
+    toast((doing||"提交")+"…","info");
+    await api(url,{method:"POST",body:body||"{}"});
+    toast(done||"操作成功","ok");
+    await refresh(true);
+  }catch(e){
+    toast(explainError(e.message)?(explainError(e.message).title+"："+e.message):("操作失败："+e.message),"err");
+  }finally{
+    if(btn)btn.disabled=false;
+  }
+}
+function errToast(e,prefix){
+  const ex=explainError(e.message);
+  if(ex&&ex.kind==="config"){setBanner(ex);toast(ex.title,"err");return;}
+  toast((prefix||"操作失败：")+e.message,"err");
+}
+
+function toggleNew(){const p=$("newPanel");p.hidden=!p.hidden;if(!p.hidden)$("newTitle").focus();}
+function closeNew(){$("newPanel").hidden=true;}
+
+async function generateNext(){
+  const n=state.novel;
+  if(!n)return toast("请先选择或新建一本小说","warn");
+  if(n.paused)return toast("小说已暂停，请先点「继续写作」","warn");
+  if(state.busy)return;
+  const nextNum=(n.current_chapter||0)+1;
+  // Serial-confirm pre-check: if the "next" number already holds a finished but
+  // unpublished draft, the server will not start a new job. Tell the user to push
+  // that chapter through 批准 -> 导出 -> 已人工发布 instead of showing "在队列中".
+  const blk=state.chapters.find(c=>c.number===nextNum);
+  if(blk&&blk.content&&["WAITING_APPROVAL","DRAFT_READY","EXPORTED"].includes(blk.status))
+    return toast("第 "+nextNum+" 章尚未完成「✅批准 → 导出 → 🚀已人工发布」确认。请先完成本章确认，之后才能生成下一章。","warn");
+  state.busy=true;$("generate").disabled=true;$("generate").textContent="⏳ 正在创建任务…";
+  try{
+    const res=await request("/api/novels/"+n.id+"/chapters/generate",{method:"POST",body:"{}"});
+    const j=res.data;
+    if(res.status===202)toast("已创建第 "+(j.chapter_number||nextNum)+" 章生成任务，Worker 将自动处理","ok");
+    else if(j&&(j.status==="PENDING"||j.status==="RUNNING"))toast("该章生成任务已在队列中，Worker 将自动处理","info");
+    else toast("该章生成任务已存在","info");
+    await refresh(true);
+  }catch(e){
+    if(e.status===409&&/confirm_previous_chapter_first/.test(e.data.message||"")){
+      const num=(e.data.details&&e.data.details.chapterNumber)||nextNum;
+      toast("第 "+num+" 章尚未完成「✅批准 → 导出 → 🚀已人工发布」确认。请先完成本章确认，之后才能生成下一章。","warn");
+    }else if(e.status===409&&/paused/.test(e.data.message||""))toast("小说已暂停，请先「继续写作」","warn");
+    else errToast(e);
+  }finally{
+    state.busy=false;
+    $("generate").textContent="＋ 生成下一章";
+    renderNovelBar();
+    updateBusyUI();
+  }
+}
+
+async function retryChapter(nid,number){
+  try{
+    await api("/api/novels/"+nid+"/chapters/generate",{method:"POST",body:JSON.stringify({chapterNumber:number})});
+    toast("已重新排队第 "+number+" 章生成任务","ok");
+    await refresh(true);
+  }catch(e){errToast(e);}
+}
+
+/* Delete the newest unpublished chapter and re-queue its number from the outline. */
+function rewriteChapter(id){
+  const c=state.chapters.find(x=>x.id===id);
+  if(!c)return;
+  const n=state.novel;
+  if(!n)return toast("请先选择一本小说","warn");
+  if(c.number<=(n.current_chapter||0))return toast("已发布的章节不能重写","warn");
+  if(CH[c.status]&&CH[c.status].busy)return toast("本章正在生成/审查中，请等待完成后重试","warn");
+  const latest=state.chapters.reduce((mx,x)=>Math.max(mx,x.number),0);
+  if(c.number!==latest)
+    return toast("仅可重写当前最新草稿章（第 "+latest+" 章）。如需改写第 "+c.number+" 章，请先依次重写其后的章节","warn");
+  const chk=confirm("确定删除并重写第 "+c.number+" 章？\n\n将清除本章的标题、正文、审查结果与全部草稿历史，并立即按 StoryBible 大纲重新生成同一章号。\n此操作不可撤销。");
+  if(!chk)return;
+  act("/api/chapters/"+id+"/rewrite","{}","正在删除并重新排队第 "+c.number+" 章…","已删除第 "+c.number+" 章并重新排队生成任务");
+}
+
+function viewChapter(id){
+  const c=state.chapters.find(x=>x.id===id);
+  if(!c)return;
+  openModal("📖 第 "+c.number+" 章「"+(c.title||"(未命名)")+"」",
+    (c.content?'<div class="view-content">'+esc(c.content)+'</div>':"<p style='color:var(--muted)'>本章尚无正文。</p>")+
+    (c.hook?'<p style="margin-top:12px;font-size:13px"><b>结尾钩子：</b>'+esc(c.hook)+'</p>':""),
+    [{label:"复制正文",primary:false,fn:()=>{navigator.clipboard.writeText(c.content||"").then(()=>toast("已复制到剪贴板","ok")).catch(()=>toast("复制失败","err"));}},
+     {label:"关闭",primary:false,fn:closeModal}]);
+}
+
+function openEdit(id){
+  const c=state.chapters.find(x=>x.id===id);
+  if(!c)return;
+  openModal("✏️ 编辑第 "+c.number+" 章草稿",
+    `<div style="font-size:13px;color:var(--warn);background:var(--warn-weak);border-radius:8px;padding:8px 10px;margin-bottom:12px">保存后会清空旧审查结果并回到「重新审查」，需再次审查后才能导出/批准。</div>
+     <label class="f">章节标题<input type="text" id="mTitle" value="${esc(c.title||"")}"></label>
+     <label class="f">正文（保存后将自动进入待审查）<textarea id="mContent" rows="14" style="min-height:320px">${esc(c.content||"")}</textarea></label>`,
+    [{label:"保存草稿",primary:true,fn:()=>saveEdit(id)},
+     {label:"取消",primary:false,fn:closeModal}]);
+}
+async function saveEdit(id){
+  const title=$("mTitle").value.trim();
+  const content=$("mContent").value;
+  try{
+    const body={content};
+    if(title!==state.chapters.find(x=>x.id===id).title)body.title=title;
+    await api("/api/chapters/"+id,{method:"PATCH",body:JSON.stringify(body)});
+    toast("草稿已保存，请重新审查","ok");
+    closeModal();await refresh(true);
+  }catch(e){errToast(e,"保存失败：");}
+}
+
+function openPublish(cid,nid,number){
+  openModal("🚀 人工发布确认（第 "+number+" 章）",
+    `<p style="margin:0 0 12px;font-size:13.5px;color:var(--muted)">请先在目标平台（番茄小说等）手动上传本章导出稿，发布成功后再回来确认。确认后系统才会把本章标记为已发布并推进剧情。</p>
+     <label class="f">发布平台（必填）<input type="text" id="pPlatform" placeholder="例如：番茄小说"></label>
+     <label class="f">操作人（必填）<input type="text" id="pOperator" value="local-user"></label>
+     <label class="f">外部链接（可选）<input type="text" id="pUrl" placeholder="https://…"></label>
+     <label class="f">备注（可选）<input type="text" id="pNotes"></label>`,
+    [{label:"确认已发布",primary:true,fn:()=>submitPublish(cid,nid,number)},
+     {label:"取消",primary:false,fn:closeModal}]);
+}
+async function submitPublish(cid,nid,number){
+  const platform=$("pPlatform").value.trim();
+  const operator=$("pOperator").value.trim();
+  if(!platform||!operator)return toast("平台与操作人必填","warn");
+  const body={novelId:nid,chapterNumber:number,platform,operator,publishedAt:new Date().toISOString()};
+  if($("pUrl").value.trim())body.externalUrl=$("pUrl").value.trim();
+  if($("pNotes").value.trim())body.notes=$("pNotes").value.trim();
+  try{
+    await api("/api/chapters/"+cid+"/publish",{method:"POST",body:JSON.stringify(body)});
+    toast("已确认第 "+number+" 章发布完成","ok");
+    closeModal();await refresh(true);
+  }catch(e){errToast(e,"发布确认失败：");}
+}
+
+async function exportChapter(cid,nid,number,fmt){
+  try{
+    const x=await api("/api/chapters/"+cid+"/export",{method:"POST",body:JSON.stringify({novelId:nid,chapterNumber:number,format:fmt})});
+    toast("已导出 "+(fmt==="txt"?"TXT":fmt==="md"?"Markdown":"JSON")+" → "+x.path,"ok");
+    await refresh(true);
+  }catch(e){errToast(e,"导出失败：");}
+}
+
+/* ---------------- modal ---------------- */
+function openModal(title,body,footBtns){
+  const t=$("modalTitle");
+  t.innerHTML=esc(title)+'<span class="spacer"></span><button class="btn ghost sm" id="modalClose">✕</button>';
+  $("modalClose").onclick=closeModal;
+  $("modalBody").innerHTML=body;
+  const foot=$("modalFoot");foot.innerHTML="";
+  (footBtns||[]).forEach(b=>{
+    const el=document.createElement("button");
+    el.className="btn sm"+(b.primary?" primary":"");
+    el.textContent=b.label;
+    el.onclick=b.fn;
+    foot.appendChild(el);
+  });
+  $("modal").hidden=false;
+  const first=$("modalBody").querySelector("input,textarea");
+  if(first)first.focus();
+}
+function closeModal(){$("modal").hidden=true;}
+$("modal").addEventListener("mousedown",e=>{if(e.target.id==="modal")closeModal();});
+
+/* ---------------- novel bar handlers ---------------- */
+$("novels").addEventListener("change",async()=>{
+  readSel();
+  if(!state.novel)return;
+  await refresh(true);
+});
+$("refresh").addEventListener("click",()=>{resetBanner();refresh(true);});
+$("generate").addEventListener("click",generateNext);
+$("resume").addEventListener("click",async()=>{
+  const n=state.novel;if(!n)return;
+  try{
+    await api("/api/novels/"+n.id+"/continue",{method:"POST",body:"{}"});
+    toast("已恢复写作并生成下一章","ok");
+    await refresh(true);
+  }catch(e){
+    if(e.status===409&&/confirm_previous_chapter_first/.test(e.data.message||"")){
+      const num=(e.data.details&&e.data.details.chapterNumber)||(n.current_chapter||0)+1;
+      toast("已恢复写作，但第 "+num+" 章尚未完成「✅批准 → 导出 → 🚀已人工发布」确认。请先完成本章确认后再继续生成。","warn");
+    }else errToast(e);
+  }
+});
+$("pause").addEventListener("click",async()=>{
+  const n=state.novel;if(!n)return;
+  try{
+    await api("/api/novels/"+n.id+"/pause",{method:"POST",body:"{}"});
+    toast("已暂停写作","ok");
+    await refresh(true);
+  }catch(e){errToast(e);}
+});
+$("toggleNew").addEventListener("click",toggleNew);
+$("newClose").addEventListener("click",closeNew);
+$("createNovel").addEventListener("click",async()=>{
+  const title=$("newTitle").value.trim();
+  if(!title)return toast("请填写书名","warn");
+  try{
+    let sb={};const raw=$("newBible").value.trim();
+    if(raw){sb=JSON.parse(raw);if(typeof sb!=="object"||Array.isArray(sb))throw Error("世界观必须是 JSON 对象");}
+    await api("/api/novels",{method:"POST",body:JSON.stringify({
+      title:title,genre:$("newGenre").value.trim(),volume:$("newVolume").value.trim(),storyBible:sb})});
+    $("newTitle").value="";$("newGenre").value="";$("newVolume").value="";$("newBible").value="";
+    closeNew();toast("小说《"+title+"》已创建","ok");
+    await refresh(true);
+  }catch(e){toast("创建失败："+e.message,"err");}
+});
+
+/* ---------------- bible ---------------- */
+$("bible").addEventListener("input",()=>{state.bibleDirty=true;$("dirtyTag").classList.add("on");});
+$("fmtBible").addEventListener("click",()=>{
+  try{$("bible").value=JSON.stringify(JSON.parse($("bible").value),null,2);state.bibleDirty=true;$("dirtyTag").classList.add("on");toast("已格式化","ok");}
+  catch(e){toast("JSON 无法格式化："+e.message,"err");}
+});
+$("saveBible").addEventListener("click",async()=>{
+  const n=state.novel;if(!n)return toast("请先选择小说","warn");
+  let obj;try{obj=JSON.parse($("bible").value);}catch(e){return toast("JSON 语法错误，无法保存："+e.message,"err");}
+  if(typeof obj!=="object"||Array.isArray(obj))return toast("StoryBible 必须是 JSON 对象","warn");
+  try{
+    const r=await api("/api/novels/"+n.id+"/story-bible",{method:"PATCH",body:JSON.stringify({storyBible:obj})});
+    state.bibleDirty=false;
+    toast("已保存 StoryBible 新版本 v"+(r&&r.version!==undefined?r.version:(n.story_bible_version+1)),"ok");
+    await refresh(true);
+  }catch(e){errToast(e,"保存失败：");}
+});
+
+/* ---------------- auth & theme ---------------- */
+$("authToken").value=token();
+$("saveToken").addEventListener("click",()=>{
+  localStorage.setItem("novelAuthToken",$("authToken").value.trim());
+  $("connDetails").open=false;
+  toast("访问凭证已保存，将附加到后续请求","ok");
+  resetBanner();refresh(true);
+});
+$("clearToken").addEventListener("click",()=>{
+  localStorage.removeItem("novelAuthToken");$("authToken").value="";
+  toast("已清除访问凭证","info");resetBanner();refresh(true);
+});
+$("authToken").addEventListener("click",e=>e.stopPropagation());
+$("connDetails").addEventListener("click",e=>e.stopPropagation());
+
+function applyTheme(t){document.documentElement.dataset.theme=t;
+  localStorage.setItem("theme",t);
+  $("themeBtn").textContent=t==="dark"?"☀️":"🌙";}
+$("themeBtn").addEventListener("click",()=>{
+  const cur=document.documentElement.dataset.theme==="dark"?"dark":"light";
+  applyTheme(cur==="dark"?"light":"dark");});
+(function initTheme(){
+  const saved=localStorage.getItem("theme");
+  if(saved)return applyTheme(saved);
+  applyTheme(window.matchMedia&&window.matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light");
+})();
+
+/* ---------------- polling ---------------- */
+function schedule(ms){
+  if(pollTimer)clearTimeout(pollTimer);
+  pollTimer=setTimeout(pollTick,ms||3000);
+}
+async function pollTick(){
+  if($("autoPoll").checked&&!document.hidden){
+    await refresh(false);
+  }
+  schedule(state.active?1500:4000);
+}
+
+/* ---------------- boot ---------------- */
+refresh(true);
+schedule(3000);
 </script>
+</body>
+</html>

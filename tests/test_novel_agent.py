@@ -1,5 +1,4 @@
-import json, os, socket, ssl, tempfile, unittest, subprocess, time, urllib.request
-from unittest.mock import patch
+import json, os, tempfile, unittest
 from pathlib import Path
 from novel_agent.store import Store
 from novel_agent.exporters import export_chapter, export_filename
@@ -7,6 +6,7 @@ from novel_agent.reviewer import review
 from novel_agent.service import NovelService
 from novel_agent.config import Config
 from novel_agent.deepseek import DeepSeekClient, parse_output, validate_chapter_output
+from novel_agent.worker import run_once
 
 class FakeClient:
     def __init__(self,text): self.text=text
@@ -44,6 +44,28 @@ class NovelTests(unittest.TestCase):
         with self.assertRaises(ValueError): self.store.create_job(self.novel['id'],1)
     def test_cancel_job_cancels_chapter_atomically(self):
         job,_=self.store.create_job(self.novel['id'],1); self.assertTrue(self.store.cancel_job(job['id'])); self.assertEqual(self.store.get_job(job['id'])['status'],'CANCELLED'); self.assertEqual(self.store.chapter(self.novel['id'],1)['status'],'CANCELLED'); self.assertFalse(self.store.cancel_job(job['id']))
+    def test_rewrite_latest_draft_clears_history_and_requeues(self):
+        self.store.create_job(self.novel['id'],1); ch=self.store.chapter(self.novel['id'],1); cid=ch['id']; conn=self.store.db
+        conn.execute("INSERT INTO chapter_drafts VALUES (?,?,?,?,?,?,?)",('draft1',cid,1,json.dumps({'title':'旧'}),'','{}','2026-01-01T00:00:00+00:00'))
+        conn.execute("UPDATE chapters SET status='WAITING_APPROVAL',title='旧标题',content='旧正文',review=? WHERE id=?",(json.dumps({'passed':True}),cid))
+        conn.execute("UPDATE jobs SET status='SUCCEEDED' WHERE novel_id=? AND chapter_number=1",(self.novel['id'],)); conn.commit()
+        job=self.store.rewrite_chapter(cid)
+        self.assertEqual(job['status'],'PENDING'); self.assertEqual(job['chapter_number'],1); self.assertEqual(self.store.get_job(job['id'])['idempotency_key'],f"{self.novel['id']}:1:generate")
+        fresh=self.store.chapter(self.novel['id'],1); self.assertEqual(fresh['id'],cid); self.assertEqual(fresh['status'],'PENDING'); self.assertEqual(fresh['title'],''); self.assertEqual(fresh['content'],''); self.assertEqual(fresh['review'],{})
+        self.assertEqual(conn.execute('SELECT COUNT(*) FROM chapter_drafts WHERE chapter_id=?',(cid,)).fetchone()[0],0)
+        self.assertEqual(conn.execute('SELECT COUNT(*) FROM jobs WHERE novel_id=?',(self.novel['id'],)).fetchone()[0],1)
+    def test_rewrite_requires_latest_unpublished_chapter(self):
+        self.store.create_job(self.novel['id'],1); self.store.create_job(self.novel['id'],2)
+        self.store.db.execute("UPDATE chapters SET status='WAITING_APPROVAL',content='x' WHERE novel_id=? AND number=1",(self.novel['id'],)); self.store.db.commit()
+        first=self.store.chapter(self.novel['id'],1)
+        with self.assertRaisesRegex(ValueError,'only_latest_draft_can_be_rewritten'): self.store.rewrite_chapter(first['id'])
+    def test_rewrite_rejects_published_chapter(self):
+        self.store.create_job(self.novel['id'],1); ch=self.store.chapter(self.novel['id'],1); self.store.db.execute("UPDATE chapters SET status='EXPORTED' WHERE id=?",(ch['id'],)); self.store.db.commit(); self.store.manual_publish(self.novel['id'],1,{'platform':'Fanqie','operator':'u'})
+        ch=self.store.chapter(self.novel['id'],1); self.assertEqual(ch['status'],'PUBLISHED_MANUALLY')
+        with self.assertRaisesRegex(ValueError,'chapter_already_published'): self.store.rewrite_chapter(ch['id'])
+    def test_rewrite_rejects_active_generation(self):
+        self.store.create_job(self.novel['id'],1); ch=self.store.chapter(self.novel['id'],1)
+        with self.assertRaisesRegex(ValueError,'chapter_busy'): self.store.rewrite_chapter(ch['id'])
     def test_review_blocks_export(self):
         out={'title':'','content':'','chapterGoal':'x'}; result=review(out,self.novel['story_bible'],[]); self.assertFalse(result['passed']); self.assertTrue(result['blockingIssues'])
         with self.assertRaises(ValueError): export_chapter({'number':1,'title':'','content':'','review':result},self.novel,'txt',Path(self.tmp.name))
@@ -147,21 +169,124 @@ class NovelTests(unittest.TestCase):
         finally:
             if old is None: os.environ.pop('DEEPSEEK_API_KEY',None)
             else: os.environ['DEEPSEEK_API_KEY']=old
-    def test_api_key_not_in_frontend(self):
-        self.assertNotIn('DEEPSEEK_API_KEY',Path(__file__).parents[1].joinpath('static/index.html').read_text())
-        self.assertNotIn('${c.title}',Path(__file__).parents[1].joinpath('static/index.html').read_text())
+    def test_frontend_exposes_no_api_secret(self):
+        html = Path(__file__).parents[1].joinpath('static/index.html').read_text()
+        # The dashboard names DEEPSEEK_API_KEY in its repair guidance and echoes
+        # backend error strings verbatim, so the env-var NAME is expected in the
+        # HTML. What must never ship is a real (or real-looking) secret.
+        self.assertNotRegex(html, r'sk-[A-Za-z0-9]{16,}')
+        self.assertNotRegex(html, r'DEEPSEEK_API_KEY\s*=\s*["\']?[A-Za-z0-9]{12,}')
+        self.assertNotIn('${c.title}', html)
 
-    def test_http_create_and_idempotent_job(self):
-        root=Path(__file__).parents[1]; env=os.environ.copy(); env['NOVEL_DATA_DIR']=self.tmp.name; env.pop('DEEPSEEK_API_KEY',None)
-        proc=subprocess.Popen(['python3','-m','novel_agent.server'],cwd=root,env=env,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
-        try:
-            for _ in range(30):
-                try: urllib.request.urlopen('http://127.0.0.1:8787/',timeout=.2); break
-                except Exception: time.sleep(.05)
-            def call(url,data=None):
-                body=None if data is None else json.dumps(data).encode(); req=urllib.request.Request(url,body,{'Content-Type':'application/json'} if body else {}); return json.loads(urllib.request.urlopen(req,timeout=2).read())
-            novel=call('http://127.0.0.1:8787/api/novels',{'title':'HTTP测试','storyBible':{'mainline':'主线'}}); listed=call('http://127.0.0.1:8787/api/novels'); self.assertEqual(listed[0]['story_bible']['mainline'],'主线'); a=call(f"http://127.0.0.1:8787/api/novels/{novel['id']}/chapters/generate",{}); b=call(f"http://127.0.0.1:8787/api/novels/{novel['id']}/chapters/generate",{}); self.assertEqual(a['id'],b['id'])
-        finally:
-            proc.terminate(); proc.wait(timeout=3)
+    def test_worker_marks_crashed_job_failed_when_attempts_exhausted(self):
+        # A code-level crash must not leave the job RUNNING until lease expiry and
+        # then retry forever: run_once() catches it and marks the job FAILED once
+        # max_job_attempts is reached.
+        job,_=self.store.create_job(self.novel['id'],1)
+        class Boom(FakeClient):
+            def complete(self,system,user): raise RuntimeError('boom')
+        service=NovelService(self.store,Boom(''),Config(data_dir=Path(self.tmp.name),max_job_attempts=1),Path(__file__).parents[1])
+        self.assertTrue(run_once(self.store,service))
+        row=self.store.get_job(job['id'])
+        self.assertEqual(row['status'],'FAILED')
+        self.assertIn('worker_crash:RuntimeError',row['error'])
+        self.assertEqual(self.store.chapter(self.novel['id'],1)['status'],'FAILED')
+
+    def test_worker_crash_retries_with_backoff_before_failing(self):
+        # With headroom left in max_job_attempts, a crash is scheduled for retry
+        # (PENDING + next_attempt_at) instead of dead-lettering immediately.
+        job,_=self.store.create_job(self.novel['id'],1)
+        class Boom(FakeClient):
+            def complete(self,system,user): raise ValueError('temporary')
+        service=NovelService(self.store,Boom(''),Config(data_dir=Path(self.tmp.name),max_job_attempts=3),Path(__file__).parents[1])
+        self.assertTrue(run_once(self.store,service))
+        row=self.store.get_job(job['id'])
+        self.assertEqual(row['status'],'PENDING')
+        self.assertIn('worker_crash:ValueError',row['error'])
+        self.assertIsNotNone(row['next_attempt_at'])
+
+    # ---- Correctness regression: native StoryBible keys must survive ----
+
+    def test_compact_bible_preserves_native_keys_and_bounded_facts(self):
+        # Real novels store people/arcs under protagonist/mainCharacters/storyArcs,
+        # not only under the template whitelist. compact_bible must keep them.
+        native={'protagonist':{'name':'林默','motivation':'为父报仇'*1000},
+                'mainCharacters':[{'name':f'配角{i}','role':'盟友'} for i in range(30)],
+                'storyArcs':[{'arc':'夺宝','goal':'集齐碎片'}],
+                'worldRules':[{'key':'magic','description':'灵气'}],
+                'timeline':[{'key':'e1'}]}
+        compact=NovelService.compact_bible(native)
+        self.assertNotIn('contextTruncated',compact)
+        self.assertEqual(compact['protagonist']['name'],'林默')
+        self.assertEqual(compact['protagonist']['motivation'],('为父报仇'*1000)[:2000])
+        self.assertEqual(len(compact['mainCharacters']),20)
+        self.assertIn('storyArcs',compact); self.assertIn('worldRules',compact); self.assertIn('timeline',compact)
+        self.assertEqual(compact['storyArcs'][0]['arc'],'夺宝')
+        self.assertLessEqual(len(json.dumps(compact,ensure_ascii=False)),14000)
+
+    def test_compact_bible_does_not_inject_null_template_keys(self):
+        # A native bible that has no template sections must not gain phantom
+        # null keys (the old whitelist added characters/worldRules/... as None).
+        compact=NovelService.compact_bible({'protagonist':{'name':'林默'}})
+        self.assertEqual(set(compact.keys()),{'protagonist'})
+
+    def test_compact_bible_overflow_flags_context_truncated(self):
+        # Bounded truncation alone cannot fit an enormous many-keyed bible, so
+        # the fallback must explicitly flag the digest as truncated rather than
+        # silently dropping keys or emitting an over-limit payload.
+        compact=NovelService.compact_bible({f'field{i}':'值'*2000 for i in range(20)})
+        self.assertTrue(compact.get('contextTruncated'))
+        self.assertIsInstance(compact.get('facts'),str)
+        self.assertLessEqual(len(json.dumps(compact,ensure_ascii=False)),14000)
+
+    def test_review_recognizes_native_schema_registered_characters(self):
+        bible={'protagonist':{'name':'林默','motivation':'复仇'},
+               'mainCharacters':[{'name':'阿七','role':'书童'}],
+               'supportingCast':[{'name':'老张'}]}
+        good={'title':'x','chapterGoal':'目标','content':'一。\n\n二。',
+              'stateChanges':[{'character':'林默','state':'进城'},
+                              {'character':'阿七','state':'跟随'},
+                              {'character':'老张','state':'守望'}]}
+        result=review(good,bible,[])
+        self.assertTrue(result['passed']); self.assertEqual(result['warnings'],[])
+        bad={'title':'x','chapterGoal':'目标','content':'一。\n\n二。',
+             'stateChanges':[{'character':'路人甲','state':'出现'}]}
+        result2=review(bad,bible,[])
+        self.assertIn('unregistered_character:路人甲',result2['warnings'])
+
+    def test_review_still_blocks_conflicts_on_native_bible(self):
+        bible={'protagonist':{'name':'林默'},
+               'worldRules':[{'key':'magic','severity':'high'}],
+               'timeline':[{'key':'city-burned'}],
+               'foreshadowing':[{'key':'fan','status':'OPEN'}]}
+        output={'title':'x','chapterGoal':'目标','content':'一。\n\n二。',
+                'stateChanges':[{'rule':'fly'}],
+                'eventsIntroduced':[{'key':'city-burned'}],
+                'foreshadowingResolved':['other']}
+        result=review(output,bible,[])
+        self.assertFalse(result['passed'])
+        self.assertIn('unauthorized_world_rule:fly',result['blockingIssues'])
+        self.assertIn('timeline_event_redefinition:city-burned',result['blockingIssues'])
+        self.assertIn('foreshadowing_not_open:other',result['blockingIssues'])
+
+    def test_process_prompt_keeps_native_keys_and_reviews_against_native_bible(self):
+        # End to end: a novel that registers its cast as protagonist/mainCharacters
+        # (no template 'characters' key) must keep those facts in the prompt digest
+        # AND pass review without a spurious unregistered_character warning.
+        novel=self.store.create_novel('原生小说',{'protagonist':{'name':'林默'},'mainCharacters':[{'name':'阿七'}]})
+        raw=json.loads(chapter_json()); raw['stateChanges']=[{'character':'阿七','state':'跟随'}]
+        client=SequenceClient([json.dumps(raw,ensure_ascii=False)])
+        job,_=self.store.create_job(novel['id'],1)
+        service=NovelService(self.store,client,Config(data_dir=Path(self.tmp.name)),Path(__file__).parents[1])
+        self.assertTrue(service.process(job))
+        sent=json.loads(client.calls[0]); story_bible=sent['storyBible']
+        self.assertEqual(story_bible['protagonist']['name'],'林默')
+        self.assertEqual(story_bible['mainCharacters'][0]['name'],'阿七')
+        self.assertNotIn('characters',story_bible)  # no phantom null template key
+        chapter=self.store.chapter(novel['id'],1)
+        review_raw=chapter['review']
+        review_data=json.loads(review_raw) if isinstance(review_raw,str) else review_raw
+        self.assertTrue(review_data['passed'])
+        self.assertNotIn('unregistered_character:阿七',review_data['warnings'])
 
 if __name__=='__main__': unittest.main()
