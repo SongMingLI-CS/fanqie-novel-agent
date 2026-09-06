@@ -17,6 +17,7 @@ import json
 import os
 import signal
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -83,7 +84,7 @@ class ProcessOpsTests(unittest.TestCase):
 
     def _spawn_server(self, env=None):
         proc = subprocess.Popen(
-            ["python3", "-m", "novel_agent.server"],
+            [sys.executable, "-m", "novel_agent.server"],
             cwd=ROOT,
             env=env or self._env(),
             stdout=subprocess.PIPE,
@@ -275,6 +276,10 @@ class ProcessOpsTests(unittest.TestCase):
 
     # -- graceful shutdown -------------------------------------------------
 
+    @unittest.skipUnless(
+        os.name == "posix",
+        "graceful SIGTERM delivery only exists on POSIX (Windows send_signal(SIGTERM) force-terminates)",
+    )
     def test_server_sigterm_shuts_down_cleanly(self):
         proc, base = self._spawn_server()
         self._get(f"{base}/healthz")
@@ -282,10 +287,14 @@ class ProcessOpsTests(unittest.TestCase):
         rc = proc.wait(timeout=10)
         self.assertEqual(rc, 0, "SIGTERM should trigger a graceful exit (rc=0)")
 
+    @unittest.skipUnless(
+        os.name == "posix",
+        "graceful SIGTERM delivery only exists on POSIX (Windows send_signal(SIGTERM) force-terminates)",
+    )
     def test_worker_sigterm_shuts_down_cleanly(self):
         # An idle worker on an empty queue must drain promptly on SIGTERM.
         proc = subprocess.Popen(
-            ["python3", "-m", "novel_agent.worker"],
+            [sys.executable, "-m", "novel_agent.worker"],
             cwd=ROOT,
             env=self._env(),
             stdout=subprocess.PIPE,
