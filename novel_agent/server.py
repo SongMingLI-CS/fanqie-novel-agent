@@ -424,6 +424,24 @@ class Handler(BaseHTTPRequestHandler):
             self._novel_or_404(parts[2])
             run = CheckpointRepository(store).latest_run_for_novel(parts[2])
             return self._reply(200, {"run": run})
+        if len(parts) == 4 and parts[:2] == ["api", "chapters"] and parts[3] == "history":
+            if store.chapter_by_id(parts[2]) is None:
+                raise ApiError(404, "not_found", "Chapter not found")
+            return self._reply(200, {"versions": store.draft_history(parts[2])})
+        if (
+            len(parts) == 6
+            and parts[:2] == ["api", "novels"]
+            and parts[3] == "chapters"
+            and parts[5] == "timeline"
+        ):
+            self._novel_or_404(parts[2])
+            chapter = store.chapter(parts[2], int(parts[4]))
+            if chapter is None:
+                raise ApiError(404, "not_found", "Chapter not found")
+            events = EventRepository(store).chapter_events(
+                parts[2], int(parts[4]), since=0
+            )
+            return self._reply(200, {"chapter": int(parts[4]), "events": events})
         raise ApiError(404, "not_found", "Route not found")
 
     # -- POST routes ---------------------------------------------------------
@@ -582,6 +600,10 @@ class Handler(BaseHTTPRequestHandler):
             store.set_paused(parts[2], True)
             return self._reply(200, store.get_novel(parts[2]))
 
+        # POST /api/chapters/<id>/rollback  -> restore an older draft version
+        if len(parts) == 4 and parts[:2] == ["api", "chapters"] and parts[3] == "rollback":
+            return self._rollback_chapter(parts[2], data)
+
         raise ApiError(404, "not_found", "Route not found")
 
     def _export_chapter(self, data):
@@ -624,6 +646,41 @@ class Handler(BaseHTTPRequestHandler):
                 "idempotent": chapter["status"] == "EXPORTED",
             },
         )
+
+    def _rollback_chapter(self, cid, data):
+        """Restore an older draft version as a NEW version (history preserved).
+
+        Publishing a chapter is the point of no return for its body text, so a
+        published chapter cannot be rolled back.
+        """
+        chapter = store.chapter_by_id(cid)
+        if chapter is None:
+            raise ApiError(404, "not_found", "Chapter not found")
+        if chapter.get("status") == "PUBLISHED_MANUALLY":
+            raise ApiError(409, "conflict", "chapter_already_published")
+        try:
+            version = int(data.get("version"))
+        except (TypeError, ValueError):
+            raise ApiError(400, "invalid_request", "version_must_be_an_integer")
+        payload = store.draft_version(cid, version)
+        if payload is None:
+            raise ApiError(404, "not_found", "draft_version_not_found")
+        changes = {}
+        for key, alias in (
+            ("title", None), ("content", None), ("summary", None),
+            ("goal", "chapterGoal"), ("hook", "nextChapterHook"),
+        ):
+            value = payload.get(key) if alias is None else (
+                payload.get(key) or payload.get(alias)
+            )
+            if value is not None:
+                changes[key] = value
+        if not changes:
+            raise ApiError(400, "invalid_request", "draft_version_has_no_editable_fields")
+        store.record_audit(chapter["novel_id"], "chapter_rollback", {
+            "chapter": chapter["number"], "version": version,
+        })
+        return self._reply(200, store.update_draft(cid, changes))
 
     # -- PATCH routes --------------------------------------------------------
 

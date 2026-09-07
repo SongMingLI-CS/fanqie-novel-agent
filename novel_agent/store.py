@@ -505,6 +505,54 @@ class Store:
         ).fetchone()
         return self.chapter(row[0], row[1]) if row else None
 
+    # -- draft version history / rollback -------------------------------------
+
+    @staticmethod
+    def _draft_payload(raw):
+        try:
+            value = json.loads(raw or "{}")
+            return value if isinstance(value, dict) else {}
+        except (TypeError, ValueError):
+            return {}
+
+    def draft_history(self, cid):
+        """All saved draft versions for a chapter, oldest first, with their review."""
+        rows = self.db.execute(
+            "SELECT d.id, d.version, d.payload, d.created_at, r.payload AS review_payload "
+            "FROM chapter_drafts d "
+            "LEFT JOIN review_results r ON r.draft_id = d.id "
+            "WHERE d.chapter_id=? ORDER BY d.version ASC",
+            (cid,),
+        ).fetchall()
+        versions = []
+        for row in rows:
+            payload = self._draft_payload(row["payload"])
+            review_payload = row["review_payload"]
+            try:
+                review = json.loads(review_payload) if review_payload else None
+            except (TypeError, ValueError):
+                review = None
+            versions.append({
+                "id": row["id"],
+                "version": int(row["version"]),
+                "createdAt": row["created_at"],
+                "title": payload.get("title", ""),
+                "content": payload.get("content", ""),
+                "summary": payload.get("summary", ""),
+                "goal": payload.get("goal") or payload.get("chapterGoal", ""),
+                "hook": payload.get("hook") or payload.get("nextChapterHook", ""),
+                "passed": bool(review.get("passed")) if isinstance(review, dict) and review.get("passed") is not None else None,
+            })
+        return versions
+
+    def draft_version(self, cid, version):
+        """Return the saved payload dict for a given draft version (or None)."""
+        row = self.db.execute(
+            "SELECT payload FROM chapter_drafts WHERE chapter_id=? AND version=?",
+            (cid, int(version)),
+        ).fetchone()
+        return self._draft_payload(row["payload"]) if row else None
+
     def recent(self, nid, limit=3):
         return self.chapters(nid)[-limit:]
 

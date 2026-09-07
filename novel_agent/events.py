@@ -70,6 +70,21 @@ class EventRepository:
         ).fetchone()
         return int(row["m"] or 0)
 
+    def chapter_events(self, novel_id, chapter_number, since=0, limit=300):
+        """Events whose payload belongs to one chapter (used to replay a run)."""
+        rows = self.db.execute(
+            "SELECT * FROM events WHERE novel_id=? "
+            "AND CAST(json_extract(payload,'$.chapter') AS INTEGER)=? AND id>? "
+            "ORDER BY id ASC LIMIT ?",
+            (
+                novel_id,
+                int(chapter_number),
+                int(since or 0),
+                max(1, min(int(limit), 1000)),
+            ),
+        ).fetchall()
+        return [self._hydrate(r) for r in rows]
+
     def prune(self, keep_days=7):
         """Delete events older than ``keep_days`` (best-effort housekeeping)."""
         try:

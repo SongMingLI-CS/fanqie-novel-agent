@@ -426,6 +426,8 @@ function renderProse(text){
 function chapterActions(c){
   const acts=[];
   const editable=["WAITING_APPROVAL","DRAFT_READY","EXPORTED","FAILED"];
+  acts.push('<button class="btn xs ghost" title="查看本章草稿版本并回滚" onclick="openDraftHistory(\''+esc(c.id)+'\')">📑 历史</button>');
+  acts.push('<button class="btn xs ghost" title="回放本章最近一次生成的事件与打字机效果" onclick="openRunReplay(\''+esc(c.id)+'\',\''+esc(c.novel_id)+'\','+c.number+')">🎞 回放</button>');
   if(c.content&&editable.indexOf(c.status)>=0&&c.status!=="PUBLISHED_MANUALLY")
     acts.push('<button class="btn xs" onclick="openEdit(\''+esc(c.id)+'\')">✏️ 编辑正文</button>');
   if(c.content&&c.status!=="PUBLISHED_MANUALLY"&&c.status!=="CANCELLED")
@@ -436,6 +438,7 @@ function chapterActions(c){
     acts.push('<button class="btn xs" onclick="exportChapter(\''+esc(c.id)+'\',\''+esc(c.novel_id)+'\','+c.number+',\'txt\')">TXT</button>');
     acts.push('<button class="btn xs" onclick="exportChapter(\''+esc(c.id)+'\',\''+esc(c.novel_id)+'\','+c.number+',\'md\')">MD</button>');
     acts.push('<button class="btn xs" onclick="exportChapter(\''+esc(c.id)+'\',\''+esc(c.novel_id)+'\','+c.number+',\'json\')">JSON</button>');
+    acts.push('<button class="btn xs" onclick="exportChapter(\''+esc(c.id)+'\',\''+esc(c.novel_id)+'\','+c.number+',\'docx\')">DOCX</button>');
   }
   if(c.status==="EXPORTED")
     acts.push('<button class="btn xs" onclick="openPublish(\''+esc(c.id)+'\',\''+esc(c.novel_id)+'\','+c.number+')">🚀 已人工发布</button>');
@@ -572,7 +575,8 @@ async function rewriteChapter(cid){
 async function exportChapter(cid,nid,number,fmt){
   try{
     const x=await api("/api/chapters/"+cid+"/export",{method:"POST",body:JSON.stringify({novelId:nid,chapterNumber:number,format:fmt})});
-    toast("已导出 "+(fmt==="txt"?"TXT":fmt==="md"?"Markdown":"JSON")+" → "+x.path,"ok");
+    const fmtLabel={txt:"TXT",md:"Markdown",json:"JSON",docx:"DOCX"}[fmt]||fmt;
+    toast("已导出 "+fmtLabel+" → "+x.path,"ok");
     await refresh(true);
   }catch(e){errToast(e,"导出失败：");}
 }
@@ -615,6 +619,145 @@ async function submitPublish(cid,nid,number){
     toast("已确认第 "+number+" 章发布完成","ok");
     closeModal();await refresh(true);
   }catch(e){errToast(e,"发布确认失败：");}
+}
+/* ---------------- draft history & run replay ---------------- */
+function sleep(ms){return new Promise(function(r){setTimeout(r,ms);});}
+let dhCtx=null;
+async function openDraftHistory(cid){
+  const c=state.chapters.find(function(x){return x.id===cid;});
+  if(!c)return;
+  let data;
+  try{data=await api("/api/chapters/"+cid+"/history");}
+  catch(e){errToast(e);return;}
+  const versions=data.versions||[];
+  if(!versions.length){toast("该章节还没有历史草稿版本","warn");return;}
+  dhCtx={cid:cid,c:c,versions:versions};
+  renderDraftList();
+}
+function renderDraftList(){
+  const vs=dhCtx.versions.slice().reverse();
+  const rows=vs.map(function(v,i){
+    const origin=(v.passed===true||v.passed===false)?"模型生成":"手动编辑/回滚";
+    const review=v.passed===true?'<span class="badge b-WAITING_APPROVAL">✅ 审查通过</span>':
+      (v.passed===false?'<span class="badge b-FAILED">审查未过</span>':'<span class="badge b-PENDING">未审查</span>');
+    return '<div class="hist-row"><div class="hist-meta">'+
+      '<b>v'+v.version+'</b> · '+esc(timeAgo(v.createdAt))+' · '+esc(origin)+' '+review+
+      '<div class="hist-title">'+esc(v.title||"（未命名）")+'</div></div>'+
+      '<div class="hist-actions">'+
+      '<button class="btn xs" onclick="showDraftPreview('+i+')">预览</button>'+
+      '<button class="btn xs" onclick="diffDraft('+i+')">与当前对比</button>'+
+      '<button class="btn xs danger" onclick="rollbackDraft('+i+')">回滚到此版</button>'+
+      '</div></div>';
+  }).join("");
+  const lock=dhCtx.c.status==="PUBLISHED_MANUALLY"
+    ? '<div style="color:var(--bad);margin-bottom:10px">当前章节已人工发布，正文不可回滚。</div>' : "";
+  openModal("📑 草稿版本历史（第 "+dhCtx.c.number+" 章）",
+    '<div class="hist-note">'+lock+'每一版草稿都留档于此；回滚会生成一个新版本，不会清空历史，且需重新审查。</div>'+
+    '<div class="hist-list">'+rows+'</div>',
+    [{label:"关闭",primary:false,fn:closeModal}]);
+}
+function showDraftPreview(i){
+  const v=dhCtx.versions[i];
+  openModal("📖 预览 v"+v.version,
+    '<div class="modal-read"><h3 style="margin-top:0">'+esc(v.title||"（未命名）")+'</h3>'+renderProse(v.content||"（该版本无正文）")+'</div>',
+    [{label:"返回列表",primary:false,fn:renderDraftList},{label:"关闭",primary:false,fn:closeModal}]);
+}
+function diffHtml(oldText,newText){
+  const a=String(oldText||"").split("\n"), b=String(newText||"").split("\n");
+  const n=a.length,m=b.length;
+  const dp=Array.from({length:n+1},function(){return new Array(m+1).fill(0);});
+  for(let i=n-1;i>=0;i--)for(let j=m-1;j>=0;j--)
+    dp[i][j]=a[i]===b[j]?dp[i+1][j+1]+1:Math.max(dp[i+1][j],dp[i][j+1]);
+  let i=0,j=0,out=[];
+  while(i<n&&j<m){
+    if(a[i]===b[j]){out.push('<div class="dl same">'+esc(a[i]||" ")+'</div>');i++;j++;}
+    else if(dp[i+1][j]>=dp[i][j+1]){out.push('<div class="dl rem">− '+esc(a[i]||" ")+'</div>');i++;}
+    else{out.push('<div class="dl add">+ '+esc(b[j]||" ")+'</div>');j++;}
+  }
+  while(i<n){out.push('<div class="dl rem">− '+esc(a[i])+'</div>');i++;}
+  while(j<m){out.push('<div class="dl add">+ '+esc(b[j])+'</div>');j++;}
+  return out.join("");
+}
+function diffDraft(i){
+  const v=dhCtx.versions[i];
+  openModal("🔍 对比：当前草稿 vs v"+v.version,
+    '<div class="dl-legend"><span class="dl-tag rem">红 · 仅当前草稿</span><span class="dl-tag add">绿 · 仅所选版本 v'+v.version+'</span></div>'+
+    '<div class="dl-box">'+diffHtml(dhCtx.c.content||"",v.content||"")+'</div>',
+    [{label:"返回列表",primary:false,fn:renderDraftList},{label:"关闭",primary:false,fn:closeModal}]);
+}
+async function rollbackDraft(i){
+  const v=dhCtx.versions[i];
+  if(dhCtx.c.status==="PUBLISHED_MANUALLY"){toast("已发布章节不可回滚","warn");return;}
+  if(!confirm("确定回滚到 v"+v.version+" 吗？将生成新版本并需重新审查。"))return;
+  try{
+    await api("/api/chapters/"+dhCtx.cid+"/rollback",{method:"POST",body:JSON.stringify({version:v.version})});
+    toast("已回滚到 v"+v.version,"ok");
+    closeModal();await refresh(true);
+  }catch(e){errToast(e,"回滚失败：");}
+}
+let replayCtx=null;
+async function openRunReplay(cid,nid,number){
+  if(replayCtx&&replayCtx.running)replayCtx.stop=true;
+  let data;
+  try{data=await api("/api/novels/"+nid+"/chapters/"+number+"/timeline");}
+  catch(e){errToast(e);return;}
+  const events=data.events||[];
+  if(!events.length){toast("该章节还没有可回放的事件记录（生成期间写入 events 表）","warn");return;}
+  replayCtx={cid:cid,events:events,index:0,running:false,stop:false,paused:false};
+  openModal("🎞 回放第 "+number+" 章生成过程（"+events.length+" 条事件）",
+    '<div class="replay-stage" id="rpStage"></div>'+
+    '<div class="replay-text" id="rpText"><span style="color:var(--faint)">点击「▶ 开始回放」查看。</span></div>'+
+    '<div class="replay-log" id="rpLog"></div>',
+    [{label:"▶ 开始",primary:true,fn:startReplay},
+     {label:"⏸ 暂停/继续",primary:false,fn:toggleReplayPause},
+     {label:"关闭",primary:false,fn:closeReplay}]);
+  $("rpStage").textContent="共 "+events.length+" 条事件，按 SSE 原序重现：";
+}
+function closeReplay(){if(replayCtx)replayCtx.stop=true;closeModal();}
+function toggleReplayPause(){
+  if(!replayCtx||!replayCtx.running)return toast("请先开始回放","warn");
+  replayCtx.paused=!replayCtx.paused;
+  toast(replayCtx.paused?"已暂停":"已继续","info");
+}
+function replayLine(e){
+  const p=e.payload||{};
+  const st=p.stage?((STAGE_LABELS[p.stage]||p.stage)+" "):"";
+  const text=String(p.text||"");
+  let line="";
+  if(e.type==="agent.stage")line="🛠 节点 "+st+(p.state==="running"?"开始":p.state==="done"?"完成":p.state);
+  else if(e.type==="agent.run")line="🧠 流水线状态 → "+(p.status==="SUCCEEDED"?"成功":p.status);
+  else if(e.type==="chapter.status")line="📌 章节状态 → "+((CH[p.status]&&CH[p.status].label)||p.status);
+  else if(e.type==="checkpoint.saved")line="💾 检查点已保存（"+st+"）";
+  else if(e.type==="llm.delta")line="✍️ "+st+"增量 "+text.length+" 字";
+  else if(e.type==="llm.text")line="📃 校验通过，正文 "+text.length+" 字开始揭示";
+  else if(e.type==="chapter.ready")line="🏁 完成（"+((CH[p.status]&&CH[p.status].label)||p.status)+"）";
+  else line=e.type;
+  const div=document.createElement("div");
+  div.className="rp-line";div.textContent="#"+e.id+" "+line;
+  const log=$("rpLog");
+  if(!log)return;
+  log.appendChild(div);log.scrollTop=log.scrollHeight;
+}
+async function startReplay(){
+  if(!replayCtx||replayCtx.running)return;
+  replayCtx.running=true;replayCtx.stop=false;replayCtx.paused=false;
+  const text=$("rpText");
+  if(text)text.textContent="";
+  for(let k=0;k<replayCtx.events.length&&!replayCtx.stop;k++){
+    while(replayCtx.paused&&!replayCtx.stop)await sleep(120);
+    if(replayCtx.stop||!document.getElementById("rpLog")){replayCtx.stop=true;break;}
+    const e=replayCtx.events[k];replayCtx.index=k;
+    replayLine(e);
+    if(e.type==="llm.text"){
+      const full=String((e.payload&&e.payload.text)||"");
+      if(text){text.textContent="";for(let ch=0;ch<full.length&&!replayCtx.stop;ch++){text.textContent+=full[ch];if(ch%5===0)await sleep(4);}}
+    }else if(e.type==="llm.delta"){
+      if(text&&text.textContent.indexOf("点击")<0)text.textContent="▍正在实时接收增量…";
+    }
+    await sleep(60);
+  }
+  replayCtx.running=false;
+  if(text&&!replayCtx.stop)text.textContent+="\n✔ 回放完成";
 }
 /* ---------------- modal ---------------- */
 function openModal(title,body,footBtns){
