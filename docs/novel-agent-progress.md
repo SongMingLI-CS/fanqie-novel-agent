@@ -4,8 +4,8 @@
 
 - 分支：`codex/novel-agent`
 - 开始日期：2026-09-02
-- 当前阶段：多智能体流式写作 v0.3.0 完成（流水线+断点恢复+异步流式+SSE 逐字打印）+ 无 Key 演示回放/Windows 优雅停止/DOCX 导出
-- 最近提交：26b78ea
+- 当前阶段：多智能体流式写作 v0.3.0 + 无 Key 演示回放/Windows 优雅停止/DOCX + 草稿历史与生成回放 UI + CI
+- 最近提交：8a9e416
 
 ## Phase 1：审计、Skill 和剧情状态模型
 
@@ -284,3 +284,37 @@ OK（无跳过）**；`compileall` 与 `git diff --check` 通过。另注：运�
 Windows 全量 `python -m unittest discover -s tests` = **Ran 145 tests, OK**；
 `compileall`、`git diff --check` 通过。文档同步：README（demo/优雅退出/DOCX）、
 `docs/novel-agent-publishing.md`、`docs/novel-agent-deployment.md`。
+
+## 2026-09-07：草稿历史 / 生成回放 UI + CI
+
+### ① 草稿版本历史、差异对比与回滚
+
+- `store.py`：`draft_history(cid)`（每版 payload + 关联 review_results，按版本号升序）、
+  `draft_version(cid, version)`。
+- API：`GET /api/chapters/<id>/history`、`POST /api/chapters/<id>/rollback`
+  （回滚=取旧版字段经 `update_draft` 生成**新版本**并回到 `REVIEWING`，不清历史；
+  已人工发布章节 409 拒绝并落 `chapter_rollback` 审计）。
+- 前端阅读区「📑 历史」：版本列表（模型生成/手动编辑标识 + 审查徽标）、任意版本预览、
+  与当前稿**逐行 LCS 差异**（红=仅当前，绿=仅所选版本）、一键回滚。
+
+### ② 过往生成过程回放
+
+- `events.py`：`chapter_events(novel_id, number)`（按 `json_extract(payload,'$.chapter')`
+  过滤该章全部事件，SSE 原序）。
+- API：`GET /api/novels/<id>/chapters/<n>/timeline`。
+- 前端阅读区「🎞 回放」：弹层按事件原序重现 `agent.stage / checkpoint.saved /
+  llm.delta / llm.text / chapter.ready`，日志滚动 + 正文打字机揭示，支持暂停/继续/关闭。
+
+### ③ CI（`.github/workflows/tests.yml`）
+
+- push / PR 触发；`ubuntu-latest` + `windows-latest` × Python 3.12/3.13 矩阵：
+  `pip install -e .` → compileall → `unittest discover -s tests` → `git diff --check`。
+- Windows 无真实控制台环境（如 CI runner）无法投递 `CTRL+BREAK` 时，两个优雅停止用例
+  改为 `skipTest` 如实跳过（本地交互控制台仍实测 rc=0 通过）。
+
+### 验证
+
+Windows 全量 `python -m unittest discover -s tests` = **Ran 150 tests, OK**；
+`test_http_ops` 12/12 OK、`test_history_api` 5/5 OK；`compileall`、
+`git diff --check` 通过；`static/app.js` 通过 `node --check`。
+

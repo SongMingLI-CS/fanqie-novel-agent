@@ -104,5 +104,9 @@ make build
 - **右侧主区**：选中章节的沉浸式阅读排版（衬线字体、行高 1.95、居中 44em 阅读栏、段落缩进与间距），正文/梗概/审查结果分区展示，章节操作（编辑/审查/批准/导出/发布/删除重写/重试）内联呈现。
 - **状态指示**：顶部细进度条 + 当前节点 Spinner，Agent 调用模型期间由轮询驱动；断网/缺 Key/401 等以顶部横幅醒目提示修复步骤。深浅色主题跟随系统并可手动切换。
 - **实时流式**：通过 `GET /api/events` 的 SSE 长连接，生成期间左侧 Agent 时间线实时流转，右侧在正文阶段完成后用打字机逐字揭示内容（闪烁光标）；连接断开后用事件游标自动续读，失败则回退轮询。
+- **草稿版本历史 / 差异 / 回滚**：每版草稿（含审查结果）一直留档在 `chapter_drafts`，阅读区「📑 历史」可预览任意版本、与当前稿逐行对比（红/绿差异）并回滚（生成新版本、需重新审查；已发布章节锁定）。
+- **生成过程回放**：「🎞 回放」按 SSE 原序重现该章最近一次生成的 `agent.stage / llm.delta / llm.text / chapter.ready` 事件，含正文打字机效果（数据来自 `GET /api/novels/<id>/chapters/<n>/timeline`）。
+
+后端对应新增：`GET /api/chapters/<id>/history`、`POST /api/chapters/<id>/rollback`、`GET /api/novels/<id>/chapters/<n>/timeline`（均受鉴权保护）。CI：`.github/workflows/tests.yml` 在 ubuntu/windows × Python 3.12/3.13 矩阵跑全量单测。
 
 后端接口未变（新增的 `runs/latest` 与 `config` 为可选增量）；若生成失败，先在页面顶部横幅确认是否为「缺少 DeepSeek API Key」后再排查模型/网络问题。
