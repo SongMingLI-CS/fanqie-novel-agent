@@ -731,11 +731,54 @@ function inlineRow(remLine,addLine){
   return '<div class="dl chg">'+segs.join("")+'</div>';
 }
 
+function diffSegStats(html){
+  const rem=(html.match(/class="x rem"/g)||[]).length+(html.match(/class="dl rem"/g)||[]).length;
+  const add=(html.match(/class="x add"/g)||[]).length+(html.match(/class="dl add"/g)||[]).length;
+  return {rem:rem,add:add};
+}
+function foldSameRows(html){
+  const re=/<div class="dl (same|rem|add|chg)">[\s\S]*?<\/div>/g;
+  const toks=[];let last=0,m;
+  while((m=re.exec(html))!==null){
+    if(m.index>last)toks.push(html.slice(last,m.index));
+    toks.push(m[0]);last=m.index+m[0].length;
+  }
+  if(last<html.length)toks.push(html.slice(last));
+  const kind=function(t){return t.indexOf('class="dl same"')>=0?"same":(t.indexOf('class="dl rem"')>=0?"rem":(t.indexOf('class="dl add"')>=0?"add":(t.indexOf('class="dl chg"')>=0?"chg":null)));};
+  const out=[];const keep=2,minRun=6;
+  for(let i=0;i<toks.length;){
+    if(kind(toks[i])==="same"){
+      let j=i;while(j<toks.length&&kind(toks[j])==="same")j++;
+      if(j-i>=minRun){
+        for(let k=i;k<i+keep;k++)out.push(toks[k]);
+        const mid=j-i-2*keep;
+        out.push('<details class="dl-fold"><summary>'+mid+' 行相同上下文（点击展开）</summary>');
+        for(let k=i+keep;k<j-keep;k++)out.push(toks[k]);
+        out.push('</details>');
+        for(let k=j-keep;k<j;k++)out.push(toks[k]);
+      }else{
+        for(let k=i;k<j;k++)out.push(toks[k]);
+      }
+      i=j;
+    }else{out.push(toks[i]);i++;}
+  }
+  return out.join("");
+}
 function diffDraft(i){
   const v=dhCtx.versions[i];
-  openModal("🔍 对比：当前草稿 vs v"+v.version,
-    '<div class="dl-legend"><span class="dl-tag rem">红 · 仅当前草稿</span><span class="dl-tag add">绿 · 仅所选版本 v'+v.version+'</span></div>'+
-    '<div class="dl-box">'+diffHtml(dhCtx.c.content||"",v.content||"")+'</div>',
+  const cur=dhCtx.c.content||"",oldV=v.content||"";
+  const raw=diffHtml(cur,oldV);
+  const st=diffSegStats(raw);
+  const title="对比：当前稿 vs v"+v.version;
+  let head,body;
+  if(!st.rem&&!st.add){
+    head='<div class="hist-note">当前稿与该版本正文完全一致。</div>';
+    body='<div class="dl-box"><div class="dl same" style="padding:8px 6px">两版正文没有差异，无需回滚。</div></div>';
+  }else{
+    head='<div class="dl-legend"><span class="dl-tag rem">红</span> 仅当前稿（-'+st.rem+' 处）<span class="dl-tag add" style="margin-left:12px">绿</span> 仅所选版本（+'+st.add+' 处）</div>';
+    body='<div class="dl-box">'+foldSameRows(raw)+'</div>';
+  }
+  openModal(title,head+body,
     [{label:"返回列表",primary:false,fn:renderDraftList},{label:"关闭",primary:false,fn:closeModal}]);
 }
 async function rollbackDraft(i){
@@ -758,7 +801,7 @@ async function openRunReplay(cid,nid,number){
   if(!events.length){toast("该章节还没有可回放的事件记录（生成期间写入 events 表）","warn");return;}
   replayCtx={cid:cid,events:events,index:0,running:false,stop:false,paused:false};
   openModal("🎞 回放第 "+number+" 章生成过程（"+events.length+" 条事件）",
-    '<div class="replay-stage" id="rpStage"></div>'+
+    '<div class="replay-stage" id="rpStage"></div>'+'<div class="replay-progress"><div class="rp-bar"><i id="rpBar"></i></div><span id="rpPos"></span></div>'+
     '<div class="replay-text" id="rpText"><span style="color:var(--faint)">点击「▶ 开始回放」查看。</span></div>'+
     '<div class="replay-log" id="rpLog"></div>',
     [{label:"▶ 开始",primary:true,fn:startReplay},
@@ -791,12 +834,22 @@ function replayLine(e){
   if(!log)return;
   log.appendChild(div);log.scrollTop=log.scrollHeight;
 }
+function updateReplayProgress(){
+  const bar=$("rpBar"),pos=$("rpPos");
+  if(!bar||!replayCtx)return;
+  const n=Math.max(1,(replayCtx.events||[]).length);
+  const done=Math.max(0,Math.min(n,(replayCtx.index<0?0:replayCtx.index+1)));
+  bar.style.width=Math.round(100*done/n)+"%";
+  if(pos)pos.textContent=done+"/"+n;
+}
 function revealPlaybackText(el,full){
   if(!el)return Promise.resolve();
   const total=String(full||"").length;
   el.textContent="";
   if(!total)return Promise.resolve();
-  const step=Math.max(1,Math.round(total/90));
+  const sp=(replayCtx&&replayCtx.speed)||1;
+  const frames=Math.max(12,Math.round(90/sp));
+  const step=Math.max(1,Math.round(total/frames));
   let shown=0;
   return new Promise(function(resolve){
     const tick=function(){
@@ -805,27 +858,39 @@ function revealPlaybackText(el,full){
       shown=Math.min(total,shown+step);
       el.textContent=String(full||"").slice(0,shown);
       if(shown>=total)return resolve();
-      setTimeout(tick,16);
+      setTimeout(tick,Math.max(8,Math.round(16/sp)));
     };
     tick();
   });
 }
 async function startReplay(){
   if(!replayCtx||replayCtx.running)return;
-  replayCtx.running=true;replayCtx.stop=false;replayCtx.paused=false;replayCtx.finish=false;
+  replayCtx.running=true;replayCtx.stop=false;replayCtx.paused=false;replayCtx.finish=false;replayCtx.speed=replayCtx.speed||1;
   const foot=$("modalFoot");
+  if(foot&&!foot.querySelector("[data-replay-speed]")){
+    const seq=[1,2,4];
+    const sb=document.createElement("button");
+    sb.className="btn sm";sb.dataset.replaySpeed="1";
+    sb.textContent="速度 "+replayCtx.speed+"×";
+    sb.onclick=function(){
+      replayCtx.speed=seq[(seq.indexOf(replayCtx.speed)+1)%seq.length]||1;
+      sb.textContent="速度 "+replayCtx.speed+"×";
+    };
+    foot.insertBefore(sb,foot.firstChild);
+  }
   if(foot&&!foot.querySelector("[data-replay-skip]")){
     const skip=document.createElement("button");
-    skip.className="btn sm";
-    skip.dataset.replaySkip="1";
-    skip.textContent=String.fromCharCode(0x23e9,32,0x5b8c,0x6210);
+    skip.className="btn sm";skip.dataset.replaySkip="1";
+    skip.textContent="⏩ 完成";
     skip.onclick=function(){if(replayCtx)replayCtx.finish=true;};
     foot.insertBefore(skip,foot.firstChild);
   }
   const text=$("rpText");
   if(text)text.textContent="";
+  replayCtx.index=-1;updateReplayProgress();
+  const spd=function(){return (replayCtx&&replayCtx.speed)||1;};
   for(let k=0;k<replayCtx.events.length&&!replayCtx.stop&&!replayCtx.finish;k++){
-    while(replayCtx.paused&&!replayCtx.stop&&!replayCtx.finish)await sleep(120);
+    while(replayCtx.paused&&!replayCtx.stop&&!replayCtx.finish)await sleep(Math.round(120/spd()));
     if(replayCtx.stop||replayCtx.finish||!document.getElementById("rpLog")){replayCtx.stop=true;break;}
     const e=replayCtx.events[k];replayCtx.index=k;
     replayLine(e);
@@ -833,14 +898,15 @@ async function startReplay(){
       const full=String((e.payload&&e.payload.text)||"");
       await revealPlaybackText(text,full);
     }else if(e.type==="llm.delta"){
-      if(text&&!text.textContent.length)text.textContent=String.fromCharCode(0x270d,32,0x6b63,0x5728,0x5b9e,0x65f6,0x63a5,0x6536,0x589e,0x91cf,0x2026);
+      if(text&&!text.textContent.length)text.textContent="正在实时接收增量…";
     }
-    await sleep(60);
+    updateReplayProgress();
+    await sleep(Math.round(60/spd()));
   }
   replayCtx.running=false;
-  if(text&&!replayCtx.stop)text.textContent+=String.fromCharCode(10,0x2705,32,0x56de,0x653e,0x5b8c,0x6210);
+  if(replayCtx.stop||replayCtx.finish){replayCtx.index=Math.max(0,replayCtx.events.length-1);updateReplayProgress();}
+  if(text&&!replayCtx.stop)text.textContent+="\n回放完成";
 }
-
 /* ---------------- modal ---------------- */
 function openModal(title,body,footBtns){
   const t=$("modalTitle");
