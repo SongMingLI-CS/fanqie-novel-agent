@@ -439,7 +439,8 @@ class Handler(BaseHTTPRequestHandler):
             if chapter is None:
                 raise ApiError(404, "not_found", "Chapter not found")
             events = EventRepository(store).chapter_events(
-                parts[2], int(parts[4]), since=0
+                parts[2], int(parts[4]), since=0,
+                limit=self._int_query("limit", 5000, 10000),
             )
             return self._reply(200, {"chapter": int(parts[4]), "events": events})
         raise ApiError(404, "not_found", "Route not found")

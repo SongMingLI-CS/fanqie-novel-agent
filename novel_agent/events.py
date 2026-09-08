@@ -30,11 +30,22 @@ class EventRepository:
 
     def publish(self, novel_id, run_id, event_type, payload=None):
         """Append one event and return its row as a dict."""
-        row = (novel_id, run_id, event_type, dumps(payload or {}), now())
+        if payload is None:
+            payload = {}
+        elif not isinstance(payload, dict):
+            try:
+                payload = dict(payload)
+            except (TypeError, ValueError):
+                payload = {}
+        try:
+            chapter = int(payload.get("chapter"))
+        except (TypeError, ValueError):
+            chapter = None
+        row = (novel_id, run_id, event_type, dumps(payload), chapter, now())
         with self.tx():
             cursor = self.db.execute(
-                "INSERT INTO events(novel_id, run_id, type, payload, created_at) "
-                "VALUES (?,?,?,?,?)",
+                "INSERT INTO events(novel_id, run_id, type, payload, chapter, created_at) "
+                "VALUES (?,?,?,?,?,?)",
                 row,
             )
             event_id = cursor.lastrowid
@@ -49,6 +60,7 @@ class EventRepository:
     @staticmethod
     def _hydrate(row):
         event = dict(row)
+        event.pop("chapter", None)
         try:
             event["payload"] = json.loads(event["payload"] or "{}")
         except (TypeError, ValueError):
@@ -73,14 +85,13 @@ class EventRepository:
     def chapter_events(self, novel_id, chapter_number, since=0, limit=300):
         """Events whose payload belongs to one chapter (used to replay a run)."""
         rows = self.db.execute(
-            "SELECT * FROM events WHERE novel_id=? "
-            "AND CAST(json_extract(payload,'$.chapter') AS INTEGER)=? AND id>? "
+            "SELECT * FROM events WHERE novel_id=? AND chapter=? AND id>? "
             "ORDER BY id ASC LIMIT ?",
             (
                 novel_id,
                 int(chapter_number),
                 int(since or 0),
-                max(1, min(int(limit), 1000)),
+                max(1, min(int(limit), 10000)),
             ),
         ).fetchall()
         return [self._hydrate(r) for r in rows]

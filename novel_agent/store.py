@@ -41,7 +41,7 @@ CREATE TABLE IF NOT EXISTS audit_log (id TEXT PRIMARY KEY, novel_id TEXT, action
 CREATE TABLE IF NOT EXISTS agent_runs (id TEXT PRIMARY KEY, job_id TEXT NOT NULL UNIQUE, novel_id TEXT NOT NULL, chapter_number INTEGER NOT NULL, stages TEXT NOT NULL, target_words INTEGER DEFAULT 0, auto_export_txt INTEGER DEFAULT 1, status TEXT NOT NULL, current_stage TEXT DEFAULT '', error TEXT DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS agent_stages (run_id TEXT NOT NULL, stage TEXT NOT NULL, state TEXT NOT NULL, payload TEXT DEFAULT '{}', raw TEXT DEFAULT '', error TEXT DEFAULT '', started_at TEXT DEFAULT '', finished_at TEXT DEFAULT '', PRIMARY KEY(run_id,stage), FOREIGN KEY(run_id) REFERENCES agent_runs(id));
 CREATE TABLE IF NOT EXISTS checkpoints (run_id TEXT NOT NULL, stage TEXT NOT NULL, context TEXT DEFAULT '{}', memory TEXT DEFAULT '{}', created_at TEXT NOT NULL, PRIMARY KEY(run_id,stage), FOREIGN KEY(run_id) REFERENCES agent_runs(id));
-CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY AUTOINCREMENT, novel_id TEXT NOT NULL, run_id TEXT, type TEXT NOT NULL, payload TEXT DEFAULT '{}', created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY AUTOINCREMENT, novel_id TEXT NOT NULL, run_id TEXT, type TEXT NOT NULL, payload TEXT DEFAULT '{}', chapter INTEGER, created_at TEXT NOT NULL);
 """
 
 
@@ -65,6 +65,15 @@ class Store:
         self._ensure_column(conn, 'chapters', 'beats', "TEXT DEFAULT '[]'")
         self._ensure_column(conn, 'jobs', 'next_attempt_at', "TEXT")
         self._ensure_column(conn, 'jobs', 'config', "TEXT DEFAULT ''")
+        # events: denormalised chapter column + indexes so replay/SSE reads never
+        # scan the whole bus or json-extract every row.
+        self._ensure_column(conn, 'events', 'chapter', 'INTEGER')
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_events_novel ON events(novel_id, id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_events_chapter ON events(novel_id, chapter, id)")
+        conn.execute(
+            "UPDATE events SET chapter=CAST(json_extract(payload,'$.chapter') AS INTEGER) "
+            "WHERE chapter IS NULL AND json_extract(payload,'$.chapter') IS NOT NULL"
+        )
         conn.commit()
 
     # -- connections ---------------------------------------------------------

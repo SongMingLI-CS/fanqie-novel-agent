@@ -663,21 +663,74 @@ function showDraftPreview(i){
     [{label:"返回列表",primary:false,fn:renderDraftList},{label:"关闭",primary:false,fn:closeModal}]);
 }
 function diffHtml(oldText,newText){
-  const a=String(oldText||"").split("\n"), b=String(newText||"").split("\n");
+  const a=splitTextLines(oldText),b=splitTextLines(newText);
+  const out=[];
+  if(a.length===b.length){
+    let same=true;
+    for(let i=0;i<a.length;i++){if(a[i]!==b[i]){same=false;break;}}
+    if(same){for(let i=0;i<a.length;i++)out.push(dlRow("same",a[i]));return out.join("");}
+  }
+  let p=0;
+  while(p<a.length&&p<b.length&&a[p]===b[p]){out.push(dlRow("same",a[p]));p++;}
+  let qa=a.length-1,qb=b.length-1;
+  while(qa>=p&&qb>=p&&a[qa]===b[qb]){qa--;qb--;}
+  const suffix=[];
+  for(let k=qb+1;k<b.length;k++)suffix.push(dlRow("same",b[k]));
+  const A=a.slice(p,qa+1),B=b.slice(p,qb+1);
+  if(!A.length&&!B.length)return out.concat(suffix).join("");
+  if((A.length+1)*(B.length+1)>1500000){
+    for(let i=0;i<A.length;i++)out.push(dlRow("rem",A[i]));
+    for(let j=0;j<B.length;j++)out.push(dlRow("add",B[j]));
+    return out.concat(suffix).join("");
+  }
+  const n=A.length,m=B.length;
+  const dp=Array.from({length:n+1},function(){return new Array(m+1).fill(0);});
+  for(let i=n-1;i>=0;i--)for(let j=m-1;j>=0;j--)
+    dp[i][j]=A[i]===B[j]?dp[i+1][j+1]+1:Math.max(dp[i+1][j],dp[i][j+1]);
+  let i=0,j=0,remRun=[],addRun=[];
+  const flush=function(){
+    if(!remRun.length&&!addRun.length)return;
+    if(remRun.length===addRun.length){
+      for(let x=0;x<remRun.length;x++)out.push(inlineRow(remRun[x],addRun[x]));
+    }else{
+      for(let x=0;x<remRun.length;x++)out.push(dlRow("rem",remRun[x]));
+      for(let x=0;x<addRun.length;x++)out.push(dlRow("add",addRun[x]));
+    }
+    remRun=[];addRun=[];
+  };
+  while(i<n&&j<m){
+    if(A[i]===B[j]){flush();out.push(dlRow("same",A[i]));i++;j++;}
+    else if(dp[i+1][j]>=dp[i][j+1]){remRun.push(A[i]);i++;}
+    else{addRun.push(B[j]);j++;}
+  }
+  while(i<n){remRun.push(A[i]);i++;}
+  while(j<m){addRun.push(B[j]);j++;}
+  flush();
+  return out.concat(suffix).join("");
+}
+function splitTextLines(s){return String(s==null?"":s).split(String.fromCharCode(10));}
+function dlRow(cls,line){return '<div class="dl '+cls+'">'+esc(line||" ")+'</div>';}
+function inlineRow(remLine,addLine){
+  if(remLine===addLine)return dlRow("same",remLine);
+  if((remLine.length+1)*(addLine.length+1)>900000)
+    return dlRow("rem",remLine)+dlRow("add",addLine);
+  const a=Array.from(remLine),b=Array.from(addLine);
   const n=a.length,m=b.length;
   const dp=Array.from({length:n+1},function(){return new Array(m+1).fill(0);});
   for(let i=n-1;i>=0;i--)for(let j=m-1;j>=0;j--)
     dp[i][j]=a[i]===b[j]?dp[i+1][j+1]+1:Math.max(dp[i+1][j],dp[i][j+1]);
-  let i=0,j=0,out=[];
+  let i=0,j=0,segs=[];
+  const push=function(cls,txt){if(txt)segs.push('<span class="x '+cls+'">'+esc(txt)+'</span>');};
   while(i<n&&j<m){
-    if(a[i]===b[j]){out.push('<div class="dl same">'+esc(a[i]||" ")+'</div>');i++;j++;}
-    else if(dp[i+1][j]>=dp[i][j+1]){out.push('<div class="dl rem">− '+esc(a[i]||" ")+'</div>');i++;}
-    else{out.push('<div class="dl add">+ '+esc(b[j]||" ")+'</div>');j++;}
+    if(a[i]===b[j]){push("same",a[i]);i++;j++;}
+    else if(dp[i+1][j]>=dp[i][j+1]){push("rem",a[i]);i++;}
+    else{push("add",b[j]);j++;}
   }
-  while(i<n){out.push('<div class="dl rem">− '+esc(a[i])+'</div>');i++;}
-  while(j<m){out.push('<div class="dl add">+ '+esc(b[j])+'</div>');j++;}
-  return out.join("");
+  while(i<n){push("rem",a[i]);i++;}
+  while(j<m){push("add",b[j]);j++;}
+  return '<div class="dl chg">'+segs.join("")+'</div>';
 }
+
 function diffDraft(i){
   const v=dhCtx.versions[i];
   openModal("🔍 对比：当前草稿 vs v"+v.version,
@@ -738,27 +791,56 @@ function replayLine(e){
   if(!log)return;
   log.appendChild(div);log.scrollTop=log.scrollHeight;
 }
+function revealPlaybackText(el,full){
+  if(!el)return Promise.resolve();
+  const total=String(full||"").length;
+  el.textContent="";
+  if(!total)return Promise.resolve();
+  const step=Math.max(1,Math.round(total/90));
+  let shown=0;
+  return new Promise(function(resolve){
+    const tick=function(){
+      if(!document.getElementById("rpLog")){el.textContent=String(full||"");return resolve();}
+      if(replayCtx&&(replayCtx.stop||replayCtx.finish)){el.textContent=String(full||"");return resolve();}
+      shown=Math.min(total,shown+step);
+      el.textContent=String(full||"").slice(0,shown);
+      if(shown>=total)return resolve();
+      setTimeout(tick,16);
+    };
+    tick();
+  });
+}
 async function startReplay(){
   if(!replayCtx||replayCtx.running)return;
-  replayCtx.running=true;replayCtx.stop=false;replayCtx.paused=false;
+  replayCtx.running=true;replayCtx.stop=false;replayCtx.paused=false;replayCtx.finish=false;
+  const foot=$("modalFoot");
+  if(foot&&!foot.querySelector("[data-replay-skip]")){
+    const skip=document.createElement("button");
+    skip.className="btn sm";
+    skip.dataset.replaySkip="1";
+    skip.textContent=String.fromCharCode(0x23e9,32,0x5b8c,0x6210);
+    skip.onclick=function(){if(replayCtx)replayCtx.finish=true;};
+    foot.insertBefore(skip,foot.firstChild);
+  }
   const text=$("rpText");
   if(text)text.textContent="";
-  for(let k=0;k<replayCtx.events.length&&!replayCtx.stop;k++){
-    while(replayCtx.paused&&!replayCtx.stop)await sleep(120);
-    if(replayCtx.stop||!document.getElementById("rpLog")){replayCtx.stop=true;break;}
+  for(let k=0;k<replayCtx.events.length&&!replayCtx.stop&&!replayCtx.finish;k++){
+    while(replayCtx.paused&&!replayCtx.stop&&!replayCtx.finish)await sleep(120);
+    if(replayCtx.stop||replayCtx.finish||!document.getElementById("rpLog")){replayCtx.stop=true;break;}
     const e=replayCtx.events[k];replayCtx.index=k;
     replayLine(e);
     if(e.type==="llm.text"){
       const full=String((e.payload&&e.payload.text)||"");
-      if(text){text.textContent="";for(let ch=0;ch<full.length&&!replayCtx.stop;ch++){text.textContent+=full[ch];if(ch%5===0)await sleep(4);}}
+      await revealPlaybackText(text,full);
     }else if(e.type==="llm.delta"){
-      if(text&&text.textContent.indexOf("点击")<0)text.textContent="▍正在实时接收增量…";
+      if(text&&!text.textContent.length)text.textContent=String.fromCharCode(0x270d,32,0x6b63,0x5728,0x5b9e,0x65f6,0x63a5,0x6536,0x589e,0x91cf,0x2026);
     }
     await sleep(60);
   }
   replayCtx.running=false;
-  if(text&&!replayCtx.stop)text.textContent+="\n✔ 回放完成";
+  if(text&&!replayCtx.stop)text.textContent+=String.fromCharCode(10,0x2705,32,0x56de,0x653e,0x5b8c,0x6210);
 }
+
 /* ---------------- modal ---------------- */
 function openModal(title,body,footBtns){
   const t=$("modalTitle");

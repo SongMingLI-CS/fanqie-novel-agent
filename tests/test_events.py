@@ -76,5 +76,32 @@ class EventRepositoryTests(unittest.TestCase):
         self.assertEqual(len(set(ids)), 15)
 
 
+    def test_chapter_column_backs_replay_filter_and_hides_in_api(self):
+        one = self.repo.publish(self.nid, None, "llm.delta", {"chapter": 1, "text": "a"})
+        two = self.repo.publish(self.nid, None, "llm.delta", {"chapter": 2, "text": "b"})
+        self.assertNotIn("chapter", one)
+        self.assertNotIn("chapter", two)
+        got = self.repo.chapter_events(self.nid, 1)
+        self.assertEqual([e["id"] for e in got], [one["id"]])
+
+    def test_legacy_events_are_backfilled_into_chapter_column(self):
+        path = Path(self.tmp.name) / "db.sqlite3"
+        with self.store.tx():
+            self.store.db.execute(
+                "INSERT INTO events(novel_id, run_id, type, payload, created_at) "
+                "VALUES (?,?,?,?,?)",
+                (self.nid, None, "llm.text",
+                 '{"chapter": 3, "text": "legacy"}',
+                 datetime.now(timezone.utc).isoformat()),
+            )
+        legacy = Store(path)
+        try:
+            rows = EventRepository(legacy).chapter_events(self.nid, 3)
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["type"], "llm.text")
+            self.assertNotIn("chapter", rows[0])
+        finally:
+            legacy.close()
+
 if __name__ == "__main__":
     unittest.main()
