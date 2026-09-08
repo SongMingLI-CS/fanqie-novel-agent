@@ -479,13 +479,23 @@ function renderBible(){
   if(state.bibleForm&&!state.bibleDirty)renderBibleForm();
   $("dirtyTag").classList.toggle("on",!!(state.bibleDirty&&n));
 }
+function proseBlocks(text){
+  return String(text==null?"":text).split(/\n\s*\n/);
+}
+function renderProseBlocks(blocks,from,to){
+  const html=[];
+  const end=Math.min(to,blocks.length);
+  for(let i=Math.max(0,from);i<end;i++){
+    const b=blocks[i];
+    if(!b)continue;
+    const lines=b.split(/\n/).map(esc).join("<br>");
+    html.push("<p>"+lines+"</p>");
+  }
+  return html.join("");
+}
 function renderProse(text){
   if(!text)return '<p style="color:var(--faint)">（本章暂无正文）</p>';
-  const blocks=String(text).split(/\n\s*\n/);
-  return blocks.map(function(b){
-    const lines=b.split(/\n/).map(esc).join("<br>");
-    return "<p>"+lines+"</p>";
-  }).join("");
+  return renderProseBlocks(proseBlocks(text),0,9999999);
 }
 function chapterActions(c){
   const acts=[];
@@ -521,6 +531,7 @@ function renderReader(){
     box.innerHTML='<div class="empty" style="padding-top:80px"><div class="big">📖</div><p>选择左侧章节开始阅读，或点击「＋ 生成下一章」开始创作。</p></div>';
     return;
   }
+  if(state.expandChapter!==c.id){state.expandChapter=c.id;state.readerExpand=false;}
   let fail="";
   if(c.status==="FAILED"){
     if(c.review&&c.review.blockingIssues&&c.review.blockingIssues.length)
@@ -574,7 +585,14 @@ function renderReader(){
     const label=(CH[c.status]&&CH[c.status].label)||c.status;
     bodyHtml='<div class="reader"><p class="genhint"><span class="spin"></span> '+label+'… 已接收 '+fmtNum(state.streaming.chars)+' 字</p></div>';
   }else{
-    bodyHtml='<div class="reader">'+renderProse(c.content)+'</div>';
+    const _blocks=proseBlocks(c.content);
+    if(_blocks.length>250&&!state.readerExpand){
+      bodyHtml='<div class="reader">'+renderProseBlocks(_blocks,0,250)+
+        '<div class="more-bar"><span>正文共 '+_blocks.length+' 段 · 已先渲染前 250 段，避免超长页面卡顿</span>'+
+        '<button class="btn sm" id="readerExpandAll">展开剩余 '+(_blocks.length-250)+' 段</button></div></div>';
+    }else{
+      bodyHtml='<div class="reader">'+renderProseBlocks(_blocks,0,_blocks.length)+'</div>';
+    }
   }
   box.innerHTML='<div class="reader-head">'+
     '<div class="reader-nav-wrap">'+nav+'</div>'+
@@ -585,6 +603,8 @@ function renderReader(){
     '</div>'+
     fail+outline+reviewBox+
     bodyHtml;
+  const expandBtn=$("readerExpandAll");
+  if(expandBtn)expandBtn.addEventListener("click",function(){state.readerExpand=true;renderReader();});
 }
 /* ---------------- actions ---------------- */
 async function act(url,body,doing,done){
