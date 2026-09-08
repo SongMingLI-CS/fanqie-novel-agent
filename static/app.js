@@ -320,8 +320,21 @@ function renderChapterHint(){
 function renderChapterList(){
   const box=$("chapterList");
   if(!state.novel){box.innerHTML='<div class="empty">选择小说后显示章节</div>';return;}
-  if(!state.chapters.length){box.innerHTML='<div class="empty">还没有章节<br><span style="font-size:12px;color:var(--faint)">点击「＋ 生成下一章」开始</span></div>';return;}
-  box.innerHTML=state.chapters.slice().reverse().map(function(c){
+  const all=state.chapters.slice().reverse();
+  if(!all.length){box.innerHTML='<div class="empty">还没有章节<br><span style="font-size:12px;color:var(--faint)">点击「＋ 生成下一章」开始</span></div>';return;}
+  let list=all;
+  const q=(state.chapterQuery||"").trim().toLowerCase();
+  if(q){
+    list=all.filter(function(c){
+      const m=CH[c.status]||{label:c.status};
+      const hay=(String(c.number)+" "+(c.title||"")+" "+(m.label||"")).toLowerCase();
+      return hay.indexOf(q)>=0;
+    });
+    if(!list.length){box.innerHTML='<div class="empty">没有匹配「'+esc(state.chapterQuery.trim())+'」的章节</div>';return;}
+  }
+  const capNote=(list.length>400)?'<div class="list-note">章节较多，已显示最近 400 / '+list.length+' 章（缩小搜索范围可定位更早章节）</div>':"";
+  list=list.slice(0,400);
+  box.innerHTML=capNote+list.map(function(c){
     const m=CH[c.status]||{label:c.status,icon:"•",cls:"b-CANCELLED"};
     const title=c.title||(m.busy?"生成第 "+c.number+" 章…":"（未命名）");
     const active=state.selected===c.id?" active":"";
@@ -490,6 +503,15 @@ function renderReader(){
       (c.nextChapterHook?'<div style="margin-top:6px"><b>下章钩子：</b>'+esc(c.nextChapterHook)+'</div>':'')+
       '</div>';
   }
+  const sorted=state.chapters.slice().sort(function(a,b){return a.number-b.number;});
+  const ridx=sorted.findIndex(function(x){return x.id===c.id;});
+  const prevC=ridx>0?sorted[ridx-1]:null;
+  const nextC=(ridx>=0&&ridx<sorted.length-1)?sorted[ridx+1]:null;
+  const nav='<div class="reader-nav">'+
+    '<button class="btn xs nav" '+(prevC?'onclick="openChapter(\''+esc(prevC.id)+'\')"':'disabled')+'>◀ 上一章</button>'+
+    '<span class="nav-num">'+c.number+' / '+sorted.length+'</span>'+
+    '<button class="btn xs nav" '+(nextC?'onclick="openChapter(\''+esc(nextC.id)+'\')"':'disabled')+'>下一章 ▶</button>'+
+    '</div>';
   const meta=c.content
     ? '正文约 '+fmtNum(c.content.length)+' 字 · '+(c.model?esc(c.model):"")+' · '+esc(timeAgo(c.generated_at||c.updated_at))
     : esc(timeAgo(c.updated_at));
@@ -504,6 +526,7 @@ function renderReader(){
     bodyHtml='<div class="reader">'+renderProse(c.content)+'</div>';
   }
   box.innerHTML='<div class="reader-head">'+
+    '<div class="reader-nav-wrap">'+nav+'</div>'+
     '<div class="num">第 '+c.number+' 章</div>'+
     '<h2>'+esc(c.title||"（未命名）")+'</h2>'+
     '<div class="reader-meta">'+meta+'</div>'+
@@ -532,10 +555,20 @@ function errToast(e,prefix){
 }
 function toggleNew(){const p=$("newPanel");p.hidden=!p.hidden;if(!p.hidden)$("newTitle").focus();}
 function closeNew(){$("newPanel").hidden=true;}
+function readLast(){
+  try{const v=JSON.parse(localStorage.getItem("novelAgentLastRead")||"null");
+    return (v&&v.novel&&v.chapter)?v:null;}catch(_){return null;}
+}
+function saveLast(novelId,chapterId){
+  if(!novelId||!chapterId)return;
+  try{localStorage.setItem("novelAgentLastRead",JSON.stringify({novel:novelId,chapter:chapterId,at:Date.now()}));}catch(_){}
+}
 function openChapter(cid){
   state.selected=cid;
+  if(state.novel)saveLast(state.novel.id,cid);
   renderChapterList();
   renderReader();
+  window.scrollTo({top:0,behavior:"smooth"});
 }
 async function generateNext(){
   const n=state.novel;
@@ -955,6 +988,13 @@ async function refresh(manual){
       ]);
       state.novel=res[0];state.chapters=res[1]||[];state.jobs=res[2]||[];state.usage=res[3]||[];
       state.run=(res[4]&&res[4].run)||null;
+      const lastPos=readLast();
+      if(lastPos&&lastPos.novel===pick.id&&!state.chapters.some(function(x){return x.id===state.selected;})){
+        const lc=state.chapters.find(function(x){return x.id===lastPos.chapter;});
+        if(lc)state.selected=lc.id;
+      }
+      if(state.selected&&!state.chapters.some(function(x){return x.id===state.selected;}))state.selected=null;
+      if(state.selected)saveLast(pick.id,state.selected);
     }else{
       state.novel=null;state.chapters=[];state.jobs=[];state.usage=[];state.run=null;
       if(state.selected)state.selected=null;
@@ -1039,7 +1079,11 @@ $("saveBible").addEventListener("click",async function(){
 });
 
 /* ---------------- novel bar ---------------- */
-$("novels").addEventListener("change",function(){refresh(true);});
+$("novels").addEventListener("change",function(){state.chapterQuery="";if($("chapterFilter"))$("chapterFilter").value="";refresh(true);});
+$("chapterFilter").addEventListener("input",function(){
+  state.chapterQuery=$("chapterFilter").value;
+  renderChapterList();
+});
 $("generate").addEventListener("click",generateNext);
 $("resume").addEventListener("click",async function(){
   const n=state.novel;if(!n)return;
