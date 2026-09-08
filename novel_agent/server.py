@@ -16,7 +16,7 @@ from .config import Config
 from .deepseek import DeepSeekClient
 from .envfile import load_env
 from .events import EventRepository
-from .exporters import EXPORT_FORMATS, export_chapter
+from .exporters import EXPORT_FORMATS, export_book, export_chapter
 from .logutil import setup_logging
 from .reviewer import review
 from .service import NovelService
@@ -615,6 +615,10 @@ class Handler(BaseHTTPRequestHandler):
             store.set_paused(parts[2], True)
             return self._reply(200, store.get_novel(parts[2]))
 
+        # POST /api/novels/<id>/export-book -> complete-book txt/md
+        if len(parts) == 4 and parts[:2] == ["api", "novels"] and parts[3] == "export-book":
+            return self._export_book(parts[2], data)
+
         # POST /api/chapters/<id>/rollback  -> restore an older draft version
         if len(parts) == 4 and parts[:2] == ["api", "chapters"] and parts[3] == "rollback":
             return self._rollback_chapter(parts[2], data)
@@ -661,6 +665,23 @@ class Handler(BaseHTTPRequestHandler):
                 "idempotent": chapter["status"] == "EXPORTED",
             },
         )
+
+    def _export_book(self, nid, data):
+        """POST /api/novels/<id>/export-book: one complete-book file (txt/md)."""
+        novel = self._novel_or_404(nid)
+        fmt = str(data.get("format", "txt"))
+        if fmt not in ("txt", "md"):
+            raise ApiError(400, "invalid_request", "unsupported_book_export_format")
+        chapters = store.published_chapters(nid)
+        if not chapters:
+            raise ApiError(409, "conflict", "no_published_chapters")
+        path = export_book(novel, chapters, fmt, config.data_dir / "exports")
+        store.record_audit(nid, "book_export", {
+            "format": fmt, "chapters": len(chapters), "path": str(path),
+        })
+        return self._reply(200, {
+            "path": str(path), "format": fmt, "chapters": len(chapters),
+        })
 
     def _rollback_chapter(self, cid, data):
         """Restore an older draft version as a NEW version (history preserved).

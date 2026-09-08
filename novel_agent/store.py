@@ -510,6 +510,18 @@ class Store:
             ).fetchall()
         ]
 
+    def published_chapters(self, nid):
+        """Chapters that are safe to include in a whole-book export.
+
+        Only chapters that already reached EXPORTED or PUBLISHED_MANUALLY carry
+        the review-passed guarantee enforced by the single-chapter export gate.
+        """
+        return [
+            c for c in self.chapters(nid)
+            if c.get("content")
+            and c.get("status") in ("PUBLISHED_MANUALLY", "EXPORTED")
+        ]
+
     def chapter_by_id(self, cid):
         row = self.db.execute(
             "SELECT novel_id,number FROM chapters WHERE id=?", (cid,)

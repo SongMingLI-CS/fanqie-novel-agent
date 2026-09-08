@@ -311,6 +311,8 @@ function renderNovelStats(){
   if(n.genre)parts.push('<span class="chip">'+esc(n.genre)+'</span>');
   if(paused)parts.push('<span class="chip warn">⏸ 已暂停</span>');
   box.innerHTML=parts.join("");
+  const bookExport=$("bookExport");
+  if(bookExport)bookExport.hidden=!state.chapters.some(function(c){return c.status==="PUBLISHED_MANUALLY"||c.status==="EXPORTED";});
   $("pause").hidden=!n||paused;
   $("resume").hidden=!n||!paused;
 }
@@ -604,6 +606,13 @@ async function rewriteChapter(cid){
     toast("已删除并重新排队生成","ok");
     await refresh(true);
   }catch(e){errToast(e);}
+}
+async function exportBook(fmt){
+  const n=state.novel;if(!n)return;
+  try{
+    const x=await api("/api/novels/"+n.id+"/export-book",{method:"POST",body:JSON.stringify({format:fmt})});
+    toast("已导出全本 "+fmt.toUpperCase()+"（含 "+x.chapters+" 章）→ "+x.path,"ok");
+  }catch(e){errToast(e,"导出全本失败：");}
 }
 async function exportChapter(cid,nid,number,fmt){
   try{
@@ -1085,6 +1094,8 @@ $("chapterFilter").addEventListener("input",function(){
   renderChapterList();
 });
 $("generate").addEventListener("click",generateNext);
+$("exportBookTxt").addEventListener("click",function(){exportBook("txt");});
+$("exportBookMd").addEventListener("click",function(){exportBook("md");});
 $("resume").addEventListener("click",async function(){
   const n=state.novel;if(!n)return;
   const cfg=flowConfig();

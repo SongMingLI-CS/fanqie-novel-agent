@@ -109,3 +109,51 @@ def export_chapter(chapter, novel, fmt, directory):
     finally:
         temporary.unlink(missing_ok=True)
     return path
+
+
+def export_book(novel, chapters, fmt, directory):
+    """Write one complete-book text file for the given chapters (in order).
+
+    Only the two plain-text formats (txt/md) are supported for a whole
+    book; a zip-based format would need its own package container.
+    """
+    if fmt not in ("txt", "md"):
+        raise ValueError('unsupported book export format')
+    title = str(novel.get('title') or '未命名小说')
+    volume = str(novel.get('volume') or '').strip()
+    blocks = []
+    if fmt == 'md':
+        blocks.append("# " + title)
+        if volume:
+            blocks.append("> " + volume)
+        for ch in chapters:
+            number = int(ch.get('number') or 0)
+            ctitle = str(ch.get('title') or '').strip()
+            blocks.append("")
+            blocks.append("## %d. %s" % (number, ctitle))
+            body = str(ch.get('content') or '').strip('\n')
+            blocks.append(body)
+    else:
+        blocks.append(title)
+        if volume:
+            blocks.append(volume)
+        for ch in chapters:
+            number = int(ch.get('number') or 0)
+            ctitle = str(ch.get('title') or '').strip()
+            blocks.append("")
+            blocks.append("第%d章 %s" % (number, ctitle))
+            body = str(ch.get('content') or '').strip('\n')
+            blocks.append(body)
+    body_text = "\n".join(blocks).strip("\n") + "\n"
+    base = safe_filename_component(title, '未命名小说')
+    filename = "%s_全本.%s" % (base, fmt)
+    directory = Path(directory)
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / filename
+    temporary = directory / (".%s.%s.tmp" % (path.name, uuid.uuid4().hex))
+    try:
+        temporary.write_text(body_text, encoding='utf-8')
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return path
