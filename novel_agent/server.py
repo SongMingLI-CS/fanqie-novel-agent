@@ -83,6 +83,16 @@ def _conflict_message(message):
     )
 
 
+_API_CHAPTER_STRIP = ("raw_response", "proposed_state")
+
+
+def _public_chapter(chapter):
+    """Drop heavy internal-only fields from chapter JSON sent to the browser."""
+    if not isinstance(chapter, dict):
+        return chapter
+    return {k: v for k, v in chapter.items() if k not in _API_CHAPTER_STRIP}
+
+
 def _sanitize_run_config(data):
     """Validate an optional per-run generation ``config`` object.
 
@@ -273,6 +283,7 @@ class Handler(BaseHTTPRequestHandler):
         except (TypeError, ValueError):
             cursor = 0
         last_beat = time.monotonic()
+        idle_wait = 0.2
         try:
             while not _STOP_EVENT.is_set():
                 rows = repo.read_since(novel_id, cursor, limit=100)
@@ -283,6 +294,7 @@ class Handler(BaseHTTPRequestHandler):
                 if rows:
                     self.wfile.flush()
                     last_beat = time.monotonic()
+                    idle_wait = 0.2
                     continue
                 if time.monotonic() - last_beat >= 15:
                     # Keep-alive comment so proxies do not idle the connection.
@@ -290,7 +302,9 @@ class Handler(BaseHTTPRequestHandler):
                     self.wfile.flush()
                     last_beat = time.monotonic()
                     continue
-                _STOP_EVENT.wait(0.4)
+                # Adaptive idle backoff: fast while events flow, slow when quiet.
+                _STOP_EVENT.wait(idle_wait)
+                idle_wait = min(1.5, idle_wait + 0.2)
         except (BrokenPipeError, ConnectionResetError, TimeoutError, OSError):
             pass  # client went away / server is shutting down
 
@@ -396,7 +410,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._reply(200, self._novel_or_404(parts[2]))
         if len(parts) == 4 and parts[:2] == ["api", "novels"] and parts[3] == "chapters":
             self._novel_or_404(parts[2])
-            return self._reply(200, store.chapters(parts[2]))
+            return self._reply(200, [_public_chapter(c) for c in store.chapters(parts[2])])
         if len(parts) == 4 and parts[:2] == ["api", "novels"] and parts[3] == "jobs":
             self._novel_or_404(parts[2])
             return self._reply(200, store.jobs(parts[2]))
@@ -412,7 +426,7 @@ class Handler(BaseHTTPRequestHandler):
             chapter = store.chapter_by_id(parts[2])
             if chapter is None:
                 raise ApiError(404, "not_found", "Chapter not found")
-            return self._reply(200, chapter)
+            return self._reply(200, _public_chapter(chapter))
         # Ops observability (auth-protected like the rest of /api/*).
         if parts[:2] == ["api", "ops"] and parts[2:] == ["metrics"]:
             return self._reply(200, store.metrics())
@@ -557,7 +571,7 @@ class Handler(BaseHTTPRequestHandler):
             if store.chapter(nid, number) is None:
                 raise ApiError(404, "not_found", "Chapter not found")
             store.manual_publish(nid, number, data)
-            return self._reply(200, store.chapter(nid, number))
+            return self._reply(200, _public_chapter(store.chapter(nid, number)))
 
         # POST /api/chapters/<id>/review
         if len(parts) == 4 and parts[:2] == ["api", "chapters"] and parts[3] == "review":
@@ -581,7 +595,7 @@ class Handler(BaseHTTPRequestHandler):
             if chapter.get("review", {}).get("blockingIssues"):
                 raise ApiError(409, "conflict", "chapter_cannot_be_approved")
             store.set_status(chapter["novel_id"], chapter["number"], "DRAFT_READY")
-            return self._reply(200, store.chapter_by_id(parts[2]))
+            return self._reply(200, _public_chapter(store.chapter_by_id(parts[2])))
 
         # POST /api/chapters/<id>/rewrite
         # Serial overwrite rewrite: delete the newest unpublished chapter and
@@ -681,7 +695,7 @@ class Handler(BaseHTTPRequestHandler):
         store.record_audit(chapter["novel_id"], "chapter_rollback", {
             "chapter": chapter["number"], "version": version,
         })
-        return self._reply(200, store.update_draft(cid, changes))
+        return self._reply(200, _public_chapter(store.update_draft(cid, changes)))
 
     # -- PATCH routes --------------------------------------------------------
 
@@ -699,7 +713,7 @@ class Handler(BaseHTTPRequestHandler):
         if len(parts) == 3 and parts[:2] == ["api", "chapters"]:
             if store.chapter_by_id(parts[2]) is None:
                 raise ApiError(404, "not_found", "Chapter not found")
-            return self._reply(200, store.update_draft(parts[2], data))
+            return self._reply(200, _public_chapter(store.update_draft(parts[2], data)))
 
         raise ApiError(404, "not_found", "Route not found")
 

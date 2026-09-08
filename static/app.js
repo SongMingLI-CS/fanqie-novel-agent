@@ -913,7 +913,7 @@ function schedule(ms){
 }
 async function pollTick(){
   if(!document.hidden)await refresh(false);
-  schedule(state.active?1500:4000);
+  schedule(state.active?1500:6000);
 }
 
 /* ---------------- theme ---------------- */

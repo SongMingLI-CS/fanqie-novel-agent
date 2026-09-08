@@ -42,6 +42,8 @@ CREATE TABLE IF NOT EXISTS agent_runs (id TEXT PRIMARY KEY, job_id TEXT NOT NULL
 CREATE TABLE IF NOT EXISTS agent_stages (run_id TEXT NOT NULL, stage TEXT NOT NULL, state TEXT NOT NULL, payload TEXT DEFAULT '{}', raw TEXT DEFAULT '', error TEXT DEFAULT '', started_at TEXT DEFAULT '', finished_at TEXT DEFAULT '', PRIMARY KEY(run_id,stage), FOREIGN KEY(run_id) REFERENCES agent_runs(id));
 CREATE TABLE IF NOT EXISTS checkpoints (run_id TEXT NOT NULL, stage TEXT NOT NULL, context TEXT DEFAULT '{}', memory TEXT DEFAULT '{}', created_at TEXT NOT NULL, PRIMARY KEY(run_id,stage), FOREIGN KEY(run_id) REFERENCES agent_runs(id));
 CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY AUTOINCREMENT, novel_id TEXT NOT NULL, run_id TEXT, type TEXT NOT NULL, payload TEXT DEFAULT '{}', chapter INTEGER, created_at TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_log(created_at);
+CREATE INDEX IF NOT EXISTS idx_usage_created ON usage(created_at);
 """
 
 
