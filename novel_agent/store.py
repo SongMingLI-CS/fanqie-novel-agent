@@ -329,13 +329,17 @@ class Store:
             )
         return self.get_job(jid)
 
-    def jobs(self, nid):
-        return [
-            dict(x)
-            for x in self.db.execute(
-                "SELECT * FROM jobs WHERE novel_id=? ORDER BY created_at DESC", (nid,)
-            )
-        ]
+    def jobs(self, nid, status=None, limit=None):
+        sql = "SELECT * FROM jobs WHERE novel_id=?"
+        args = [nid]
+        if status:
+            sql += " AND status=?"
+            args.append(status)
+        sql += " ORDER BY created_at DESC"
+        if limit is not None:
+            sql += " LIMIT ?"
+            args.append(int(limit))
+        return [dict(x) for x in self.db.execute(sql, args).fetchall()]
 
     def cancel_job(self, jid):
         conn = self.db
@@ -806,11 +810,19 @@ class Store:
         except sqlite3.Error:
             pass
 
-    def audit_trail(self, limit=200):
+    def audit_trail(self, limit=200, action=None, novel_id=None):
         limit = max(1, min(int(limit), 1000))
-        rows = self.db.execute(
-            "SELECT * FROM audit_log ORDER BY created_at DESC LIMIT ?", (limit,)
-        ).fetchall()
+        sql = "SELECT * FROM audit_log WHERE 1=1"
+        args = []
+        if action:
+            sql += " AND action=?"
+            args.append(action)
+        if novel_id:
+            sql += " AND novel_id=?"
+            args.append(novel_id)
+        sql += " ORDER BY created_at DESC LIMIT ?"
+        args.append(limit)
+        rows = self.db.execute(sql, args).fetchall()
         return [dict(x) for x in rows]
 
     def usage_series(self, days=7):

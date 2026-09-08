@@ -413,7 +413,16 @@ class Handler(BaseHTTPRequestHandler):
             return self._reply(200, [_public_chapter(c) for c in store.chapters(parts[2])])
         if len(parts) == 4 and parts[:2] == ["api", "novels"] and parts[3] == "jobs":
             self._novel_or_404(parts[2])
-            return self._reply(200, store.jobs(parts[2]))
+            query = parse_qs(urlparse(self.path).query)
+            status = (query.get("status") or [None])[0]
+            limit = None
+            raw_limit = (query.get("limit") or [None])[0]
+            if raw_limit is not None:
+                try:
+                    limit = max(1, min(int(raw_limit), 500))
+                except (TypeError, ValueError):
+                    raise ApiError(400, "invalid_request", "limit_must_be_an_integer")
+            return self._reply(200, store.jobs(parts[2], status=status, limit=limit))
         if len(parts) == 4 and parts[:2] == ["api", "novels"] and parts[3] == "usage":
             self._novel_or_404(parts[2])
             return self._reply(200, store.usage(parts[2]))
@@ -433,7 +442,15 @@ class Handler(BaseHTTPRequestHandler):
         if parts[:2] == ["api", "ops"] and parts[2:] == ["usage"]:
             return self._reply(200, store.usage_series(self._int_query("days", 7, 90)))
         if parts[:2] == ["api", "ops"] and parts[2:] == ["audit"]:
-            return self._reply(200, store.audit_trail(self._int_query("limit", 200, 1000)))
+            query = parse_qs(urlparse(self.path).query)
+            return self._reply(
+                200,
+                store.audit_trail(
+                    self._int_query("limit", 200, 1000),
+                    action=(query.get("action") or [None])[0],
+                    novel_id=(query.get("novel_id") or [None])[0],
+                ),
+            )
         if len(parts) == 5 and parts[:2] == ["api", "novels"] and parts[4] == "runs":
             self._novel_or_404(parts[2])
             run = CheckpointRepository(store).latest_run_for_novel(parts[2])
