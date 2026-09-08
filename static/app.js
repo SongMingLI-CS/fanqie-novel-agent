@@ -421,13 +421,62 @@ function renderUsage(){
         '<td class="mono">'+(u.duration_ms?fmtNum(u.duration_ms)+"ms":"—")+'</td><td>'+st+err+'</td></tr>';
     }).join("")+'</table></div>';
 }
+function renderBibleForm(){
+  const wrap=$("bibleFormFields");
+  if(!wrap)return;
+  let obj={};
+  try{obj=JSON.parse($("bible").value||"{}");}catch(e){
+    wrap.innerHTML='<div class="bf-note warn">当前 StoryBible 无法解析为 JSON，请切回「📝 JSON」模式修正后再使用表单。</div>';
+    return;
+  }
+  if(!obj||typeof obj!=="object"||Array.isArray(obj)){
+    wrap.innerHTML='<div class="bf-note warn">StoryBible 必须是 JSON 对象。</div>';
+    return;
+  }
+  const labels={mainline:"主线",summary:"简介",genre:"分类",styleRules:"风格规则",characters:"角色",worldRules:"世界规则",timeline:"时间线",foreshadowing:"伏笔"};
+  const keys=Object.keys(obj);
+  let html=keys.length?"":'<div class="bf-note">暂无字段，点下方「＋ 添加字段」开始。</div>';
+  keys.forEach(function(k){
+    const v=obj[k];
+    const label=labels[k]||k;
+    const complex=!!(v&&typeof v==="object");
+    html+='<div class="bf-row"><div class="bf-head"><span class="bf-label">'+esc(label)+'</span>'+
+      '<code class="bf-code">'+esc(k)+'</code>'+
+      '<button type="button" class="bf-del btn xs ghost" data-del="'+esc(k)+'">删除</button></div>'+
+      (complex
+        ?'<textarea class="bf-edit mono" data-key="'+esc(k)+'" rows="5" spellcheck="false">'+esc(JSON.stringify(v,null,2))+'</textarea>'
+        :'<input class="bf-edit mono" data-key="'+esc(k)+'" value="'+esc(v==null?"":String(v))+'">')+
+      '</div>';
+  });
+  html+='<div class="bf-tools"><button type="button" class="btn sm" id="addBibleField">＋ 添加字段</button></div>';
+  wrap.innerHTML=html;
+}
+function collectBibleFromForm(){
+  const obj={};
+  const rows=document.querySelectorAll("#bibleFormFields .bf-row");
+  rows.forEach(function(row){
+    const edit=row.querySelector(".bf-edit");
+    if(!edit)return;
+    const nk=row.querySelector(".bf-newkey");
+    const key=(nk?(nk.value||"").trim():String(edit.getAttribute("data-key")||"").trim());
+    if(!key)return;
+    const raw=(edit.value||"").trim();
+    if(!raw){obj[key]="";return;}
+    let parsed=null;
+    try{parsed=JSON.parse(raw);}catch(_){parsed=null;}
+    obj[key]=(parsed===null)?raw:parsed;
+  });
+  return obj;
+}
 function renderBible(){
   const n=state.novel;
   $("bibleVersion").textContent=n?("v"+n.story_bible_version+" · 更新于 "+timeAgo(n.updated_at)):"";
   $("saveBible").disabled=!n;
   if(n&&!state.bibleDirty&&document.activeElement!==$("bible")){
     $("bible").value=JSON.stringify(n.story_bible||{},null,2);
+    if(state.bibleForm)renderBibleForm();
   }
+  if(state.bibleForm&&!state.bibleDirty)renderBibleForm();
   $("dirtyTag").classList.toggle("on",!!(state.bibleDirty&&n));
 }
 function renderProse(text){
@@ -1072,12 +1121,53 @@ $("connDetails").addEventListener("click",function(e){e.stopPropagation();});
 /* ---------------- bible ---------------- */
 $("bible").addEventListener("input",function(){state.bibleDirty=true;$("dirtyTag").classList.add("on");});
 $("fmtBible").addEventListener("click",function(){
+  if(state.bibleForm)return;
   try{$("bible").value=JSON.stringify(JSON.parse($("bible").value),null,2);state.bibleDirty=true;$("dirtyTag").classList.add("on");toast("已格式化","ok");}
   catch(e){toast("JSON 无法格式化："+e.message,"err");}
 });
+$("toggleBibleForm").addEventListener("click",function(){
+  state.bibleForm=!state.bibleForm;
+  if(state.bibleForm&&state.novel){
+    state.bibleDirty=false;
+    $("bible").value=JSON.stringify(state.novel.story_bible||{},null,2);
+  }
+  const on=!!state.bibleForm;
+  if($("bibleFormFields"))$("bibleFormFields").style.display=on?"block":"none";
+  $("bible").style.display=on?"none":"";
+  $("fmtBible").hidden=on;
+  $("toggleBibleForm").textContent=on?"📝 JSON":"🧾 表单";
+  if(on)renderBibleForm();
+});
+$("bibleFormFields").addEventListener("input",function(){
+  state.bibleDirty=true;$("dirtyTag").classList.add("on");
+});
+$("bibleFormFields").addEventListener("click",function(e){
+  if(!e.target||!e.target.closest)return;
+  const del=e.target.closest("[data-del]");
+  if(del){
+    const row=del.closest(".bf-row");
+    if(row){row.remove();state.bibleDirty=true;$("dirtyTag").classList.add("on");}
+    return;
+  }
+  if(e.target.id==="addBibleField"){
+    const wrap=$("bibleFormFields");
+    const div=document.createElement("div");
+    div.className="bf-row";
+    div.innerHTML='<div class="bf-head"><input class="bf-newkey mono" placeholder="新字段 key（英文，如 arc1）">'+
+      '<button type="button" class="bf-del btn xs ghost" data-del="new">删除</button></div>'+
+      '<textarea class="bf-edit mono" rows="4" spellcheck="false" placeholder="值：直接写文本，或粘贴 JSON 对象/数组"></textarea>';
+    wrap.insertBefore(div,wrap.querySelector(".bf-tools"));
+    state.bibleDirty=true;$("dirtyTag").classList.add("on");
+  }
+});
 $("saveBible").addEventListener("click",async function(){
   const n=state.novel;if(!n)return toast("请先选择小说","warn");
-  let obj;try{obj=JSON.parse($("bible").value);}catch(e){return toast("JSON 语法错误："+e.message,"err");}
+  let obj;
+  if(state.bibleForm){
+    obj=collectBibleFromForm();
+  }else{
+    try{obj=JSON.parse($("bible").value);}catch(e){return toast("JSON 语法错误："+e.message,"err");}
+  }
   if(typeof obj!=="object"||Array.isArray(obj))return toast("StoryBible 必须是 JSON 对象","warn");
   try{
     const r=await api("/api/novels/"+n.id+"/story-bible",{method:"PATCH",body:JSON.stringify({storyBible:obj})});
@@ -1087,6 +1177,7 @@ $("saveBible").addEventListener("click",async function(){
   }catch(e){errToast(e,"保存失败：");}
 });
 
+/* ---------------- novel bar ---------------- */
 /* ---------------- novel bar ---------------- */
 $("novels").addEventListener("change",function(){state.chapterQuery="";if($("chapterFilter"))$("chapterFilter").value="";refresh(true);});
 $("chapterFilter").addEventListener("input",function(){
