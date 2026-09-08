@@ -889,6 +889,8 @@ async function startReplay(){
   if(text)text.textContent="";
   replayCtx.index=-1;updateReplayProgress();
   const spd=function(){return (replayCtx&&replayCtx.speed)||1;};
+  const parseT=function(s){const t=new Date(s).getTime();return isNaN(t)?0:t;};
+  let prevT=0;
   for(let k=0;k<replayCtx.events.length&&!replayCtx.stop&&!replayCtx.finish;k++){
     while(replayCtx.paused&&!replayCtx.stop&&!replayCtx.finish)await sleep(Math.round(120/spd()));
     if(replayCtx.stop||replayCtx.finish||!document.getElementById("rpLog")){replayCtx.stop=true;break;}
@@ -901,7 +903,13 @@ async function startReplay(){
       if(text&&!text.textContent.length)text.textContent="正在实时接收增量…";
     }
     updateReplayProgress();
-    await sleep(Math.round(60/spd()));
+    const ts=parseT(e.created_at||e.createdAt);
+    if(k>0&&ts>0&&prevT>0){
+      await sleep(Math.min(2500,Math.max(80,Math.round((ts-prevT)*0.8/spd()))));
+    }else{
+      await sleep(Math.round(120/spd()));
+    }
+    prevT=ts||prevT;
   }
   replayCtx.running=false;
   if(replayCtx.stop||replayCtx.finish){replayCtx.index=Math.max(0,replayCtx.events.length-1);updateReplayProgress();}
