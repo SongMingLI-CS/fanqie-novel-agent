@@ -5,7 +5,7 @@
 - 分支：`codex/novel-agent`
 - 开始日期：2026-09-02
 - 当前阶段：多智能体流式写作 v0.3.0 + 无 Key 演示回放/Windows 优雅停止/DOCX + 草稿历史与生成回放 UI + CI
-- 最近提交：8a9e416
+- 最近提交：96ba864
 
 ## Phase 1：审计、Skill 和剧情状态模型
 
@@ -317,4 +317,17 @@ Windows 全量 `python -m unittest discover -s tests` = **Ran 145 tests, OK**；
 Windows 全量 `python -m unittest discover -s tests` = **Ran 150 tests, OK**；
 `test_http_ops` 12/12 OK、`test_history_api` 5/5 OK；`compileall`、
 `git diff --check` 通过；`static/app.js` 通过 `node --check`。
+
+## 2026-09-08：效果与算法优化（差异逐字化 / 回放提速 / events 查询走索引）
+
+- 差异对比：先做相同文本快速路径 + 公共前后缀裁剪，超出规模上限自动回退整行红绿，避免长稿卡顿；
+  变化段落按行 LCS 对齐后做**字符级内联差异**（红=仅当前稿、绿=仅所选版本），改动从整段高亮
+  细化为逐字标记；中文按 Unicode 码点切分，代理对不会被截断。3000 行全异正文 4ms、常规章节 <1ms。
+- 回放打字机：改为分帧揭示（定步长 + 16ms 定时累积，约 1.5s 完成长文本，不再逐字写 textContent
+  造成 O(n²) DOM 重建），并新增「⏩ 完成」按钮一键跳到结尾。
+- events 查询：`events` 表新增去规范化 `chapter` 整数列与 `(novel_id,id)`、`(novel_id,chapter,id)`
+  两个索引；Store 启动时自动建列并回填历史行；`chapter_events` 由 json_extract 全表扫改为走索引列；
+  timeline 默认取 5000 条（上限 10000），长章节回放不再截尾。
+- 验证：`Ran 152 tests, OK`（新增 2 项：索引列过滤/API 形状、旧行回填）；`compileall`、
+  `node --check`、`git diff --check` 通过。
 
