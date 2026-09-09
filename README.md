@@ -123,4 +123,3 @@ make build
   超过 400 章时只渲染最近 400 章（可用搜索定位更早章节）。
 - **任务/审计查询**：`GET /api/novels/<id>/jobs` 支持 `?status=&limit=`，
   `GET /api/ops/audit` 支持 `?action=&novel_id=` 过滤与分页。
-
