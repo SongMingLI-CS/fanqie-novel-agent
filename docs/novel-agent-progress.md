@@ -331,3 +331,23 @@ Windows 全量 `python -m unittest discover -s tests` = **Ran 150 tests, OK**；
 - 验证：`Ran 152 tests, OK`（新增 2 项：索引列过滤/API 形状、旧行回填）；`compileall`、
   `node --check`、`git diff --check` 通过。
 
+## 2026-09-08（续）：阅读导航 / 整本导出 / Bible 表单 / 长文渐进渲染 / 查询过滤
+
+- 阅读与导航：章节列表新增搜索过滤（标题/序号/状态）；阅读区头部新增 上一章/下一章 与
+  `当前章/总章数`；localStorage 记忆上次阅读的小说与章节并在重载后自动恢复；切换小说时自动清空搜索词。
+- 整本导出：新增 `POST /api/novels/<id>/export-book`（txt/md），只收录已
+  `EXPORTED`/`PUBLISHED_MANUALLY` 的章节，按章号排序写入《书名》_全本.txt/.md，并落
+  `book_export` 审计；无可用章节返回 409。**EPUB 评估结论：暂不实现**——需要完整 zip
+  容器规范（mimetype/container/opf/nav）与更多回归面，txt/md 已覆盖主要交付场景。
+- Story Bible 逐字段表单：侧栏「🧾 表单」切换；标量值用输入框、对象/数组用 JSON 编辑区；
+  可删除已有字段、可新增任意 key 行；保存仍走 `PATCH /api/novels/<id>/story-bible`，
+  与 JSON 文本模式互为补充。
+- 长文健壮性：正文超过 250 段时先渲染前 250 段并提供「展开剩余 N 段」按钮（按章记忆）；
+  章节列表超过 400 章时提示「仅显示最近 400 章」，配合搜索可定位更早章节。
+- 查询过滤与分页：`GET /api/novels/<id>/jobs?status=&limit=`（上限 500）、
+  `GET /api/ops/audit?action=&novel_id=&limit=`；`store.jobs()` 与
+  `store.audit_trail()` 增加对应条件参数。
+- 验证：新增 `tests/test_book_export.py`（3 项）、`tests/test_query_filters.py`
+  （3 项）；Windows 全量 **Ran 158 tests, OK**；`compileall`、`node --check`、
+  `git diff --check` 通过。
+

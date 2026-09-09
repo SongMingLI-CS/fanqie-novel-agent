@@ -110,3 +110,17 @@ make build
 后端对应新增：`GET /api/chapters/<id>/history`、`POST /api/chapters/<id>/rollback`、`GET /api/novels/<id>/chapters/<n>/timeline`（均受鉴权保护）。CI：`.github/workflows/tests.yml` 在 ubuntu/windows × Python 3.12/3.13 矩阵跑全量单测。
 
 后端接口未变（新增的 `runs/latest` 与 `config` 为可选增量）；若生成失败，先在页面顶部横幅确认是否为「缺少 DeepSeek API Key」后再排查模型/网络问题。
+
+## 近期增强
+
+- **章节导航**：侧栏章节列表支持按标题/序号/状态搜索过滤；阅读区头部提供 上一章/下一章
+  与进度指示；页面会记住上次阅读的小说与章节，刷新后自动回到原处。
+- **整本导出**：有已导出/已发布章节的小说，可在顶部点「📚 全本 TXT/MD」一键导出按章排序的
+  合集文件（`POST /api/novels/<id>/export-book`）。
+- **Story Bible 字段表单**：Story Bible 面板可切到「🧾 表单」逐字段编辑（标量输入框、
+  对象/数组 JSON 编辑、删除与新增字段），保存与文本 JSON 模式共用同一接口与版本递增。
+- **长文渲染**：超长章节正文先渲染前 250 段并可按需展开，避免整段超长页面卡顿；章节列表
+  超过 400 章时只渲染最近 400 章（可用搜索定位更早章节）。
+- **任务/审计查询**：`GET /api/novels/<id>/jobs` 支持 `?status=&limit=`，
+  `GET /api/ops/audit` 支持 `?action=&novel_id=` 过滤与分页。
+
