@@ -384,7 +384,9 @@ function renderChapterList(){
     if(state.searchHits&&state.searchHits.query===q){
       // Server-side search result over the WHOLE novel (not just the polled window).
       list=state.searchHits.items.slice().reverse();
-      note='<div class="list-note">全库搜索「'+esc(q)+'」命中 '+list.length+' 章</div>';
+      const hit=state.searchHits.items.length;
+      note='<div class="list-note">全库搜索「'+esc(q)+'」命中 '+hit+' 章'+
+        (hit>=state.searchHits.limit?'（结果上限 '+state.searchHits.limit+' 章，请细化关键词）':'')+'</div>';
     }else{
       list=all.filter(function(c){
         const m=CH[c.status]||{label:c.status};
@@ -432,11 +434,12 @@ async function serverSearchChapters(q){
   const n=state.novel;
   if(!n)return;
   const token=++state.searchToken;
+  const limit=200;
   try{
-    const hits=await api("/api/novels/"+n.id+"/chapters?light=1&limit=200&q="+encodeURIComponent(q));
+    const hits=await api("/api/novels/"+n.id+"/chapters?light=1&limit="+limit+"&q="+encodeURIComponent(q));
     if(token!==state.searchToken)return;                       // a newer query won
     if((state.chapterQuery||"").trim()!==q)return;             // the box changed
-    state.searchHits={query:q,items:hits||[]};
+    state.searchHits={query:q,items:hits||[],limit:limit};
     renderChapterList();
   }catch(e){
     /* keep the local filter result; the next keystroke retries */
