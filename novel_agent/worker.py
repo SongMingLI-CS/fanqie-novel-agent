@@ -52,15 +52,6 @@ def run_once(store, service):
     return True
 
 
-def _process_one(config, db_path):
-    store = Store(db_path)
-    try:
-        service = NovelService(store, DeepSeekClient(config), config)
-        return run_once(store, service)
-    finally:
-        store.close()
-
-
 def run_once_stream(store, service):
     """Claim and process at most one job over the async/streaming pipeline.
 

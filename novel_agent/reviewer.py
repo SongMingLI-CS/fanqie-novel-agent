@@ -45,6 +45,43 @@ def _registered_names(bible):
     return {node.get('name') for node in _walk(bible) if isinstance(node.get('name'), str)}
 
 
+# The ``chapters`` table persists a snake_case projection of the model's
+# structured output (``goal`` / ``state_changes`` / ``foreshadowing_added`` ...)
+# while :func:`review` consumes the model contract (``chapterGoal`` /
+# ``stateChanges`` / ...). Re-reviewing a saved chapter therefore has to translate
+# one into the other; feeding the raw row in made every manual re-review fail
+# with a spurious ``missing_chapter_goal`` blocking issue.
+_CHAPTER_ROW_ALIASES = {
+    "goal": "chapterGoal",
+    "hook": "nextChapterHook",
+    "characters": "charactersUsed",
+    "events": "eventsIntroduced",
+    "foreshadowing_added": "foreshadowingAdded",
+    "foreshadowing_resolved": "foreshadowingResolved",
+    "state_changes": "stateChanges",
+    "number": "chapterNumber",
+}
+
+
+def chapter_as_output(chapter):
+    """Project a persisted chapter row into the reviewer's output contract.
+
+    Only the aliased keys are rewritten; every other field is passed through so
+    future checks can read extra columns without another mapping change.
+    """
+    if not isinstance(chapter, dict):
+        return {}
+    output = dict(chapter)
+    for row_key, output_key in _CHAPTER_ROW_ALIASES.items():
+        if row_key not in chapter:
+            continue
+        value = chapter[row_key]
+        output.pop(row_key, None)
+        if value is not None:
+            output[output_key] = value
+    return output
+
+
 def review(output, bible, recent, target_words=0):
     issues=[]; warnings=[]; blocking=[]
     # A bible may omit a section or carry it as JSON null (e.g. when the story

@@ -131,11 +131,7 @@ class AgentPipeline:
             start = stages[0] if stages else None
         else:
             memory = repo.latest_memory(run["id"])
-            try:
-                parsed = json.loads(memory) if memory else {}
-            except (TypeError, ValueError):
-                parsed = {}
-            ctx.stage_results = parsed if isinstance(parsed, dict) else {}
+            ctx.load_memory(memory)
             start = repo.resume_from(run, stages)
 
         last_raw = ""
@@ -221,11 +217,7 @@ class AgentPipeline:
             emit(nid, run["id"], "agent.run", {"chapter": number, "status": "RUNNING"})
         else:
             memory = repo.latest_memory(run["id"])
-            try:
-                parsed = json.loads(memory) if memory else {}
-            except (TypeError, ValueError):
-                parsed = {}
-            ctx.stage_results = parsed if isinstance(parsed, dict) else {}
+            ctx.load_memory(memory)
             start = repo.resume_from(run, stages)
 
         last_raw = ""

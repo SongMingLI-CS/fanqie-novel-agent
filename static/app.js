@@ -32,7 +32,10 @@ const CODES = {
   recent_chapter_overlap:{t:"与最近章节内容重复",bad:1},
   missing_chapter_goal:{t:"缺少本章目标",bad:1},
   goal_not_completed:{t:"本章目标未完成",bad:1},
-  invalid_structured_output:{t:"模型输出无法解析为结构化章节",bad:1}
+  invalid_structured_output:{t:"模型输出无法解析为结构化章节",bad:1},
+  chapter_is_terminal:{t:"已发布/已取消的章节正文不可再修改",bad:1},
+  chapter_already_published:{t:"章节已人工发布，不可回滚或重写",bad:1},
+  chapter_busy:{t:"该章节正在生成中，请稍候或先取消任务",bad:1}
 };
 function codeMsg(c){
   c=String(c);
@@ -154,8 +157,58 @@ const state={
   sig:"",active:false,busy:false,bibleDirty:false,selected:null,
   streaming:{active:false,chapter:0,chars:0},
   reveal:{chapter:0,full:null,shown:0},revealTimer:null,
-  ev:{novelId:"",since:0,ctrl:null},refreshPending:false
+  ev:{novelId:"",since:0,ctrl:null},refreshPending:false,
+  detail:{id:"",chapter:null},searchHits:null,searchToken:0,
+  /* Declared here (instead of appearing on first assignment) so the UI state
+     shape is self-documenting and never reads an undeclared key. */
+  bibleForm:false,chapterQuery:"",expandChapter:null,readerExpand:false
 };
+
+/* ---------------- chapter accessors ----------------
+   The chapter LIST is polled with ?light=1 (no prose bodies) so a long novel
+   does not re-send the whole book on every 1.5s tick. The body of the chapter
+   the user actually opened is fetched once through GET /api/chapters/<id> and
+   cached in state.detail. */
+function lightOf(cid){
+  if(!cid)return null;
+  return state.chapters.find(function(x){return x.id===cid;})||null;
+}
+function detailFor(cid){
+  const cached=state.detail.chapter;
+  if(!cached||state.detail.id!==cid)return null;
+  const known=lightOf(cid);
+  // The polled list is the source of truth for metadata, so the cached body is
+  // dropped as soon as the row changed (edit/regenerate/review) — otherwise the
+  // reader would keep showing a stale body forever.
+  if(known&&known.updated_at!==cached.updated_at)return null;
+  return cached;
+}
+function chapterOf(cid){
+  return detailFor(cid)||lightOf(cid);
+}
+function hasBody(c){return !!(c&&((c.content!==undefined&&c.content!=="")||(c.content_length||0)>0));}
+function contentLen(c){
+  if(!c)return 0;
+  if(c.content)return c.content.length;
+  return c.content_length||0;
+}
+async function ensureDetail(cid){
+  if(!cid)return null;
+  const cached=detailFor(cid);
+  if(cached)return cached;
+  try{
+    const full=await api("/api/chapters/"+cid);
+    if(!full)return null;
+    full.content_length=(full.content||"").length;
+    state.detail={id:cid,chapter:full};
+    const idx=state.chapters.findIndex(function(x){return x.id===cid;});
+    if(idx>=0)state.chapters[idx]=full;
+    if(state.selected===cid)renderReader();
+    return full;
+  }catch(e){
+    return null; // transient; the next poll/render retries
+  }
+}
 
 /* ---------------- flow config ---------------- */
 function flowMode(){
@@ -285,7 +338,7 @@ function hasActive(){
 }
 function signature(){
   const ns=state.novels.map(function(n){return [n.id,n.title,n.current_chapter,n.paused,n.story_bible_version].join("|");}).join(";");
-  const cs=state.chapters.map(function(c){return [c.number,c.status,c.title||"",(c.content||"").length,(c.review&&c.review.score)||"",(c.review&&c.review.passed)?"1":"0",c.updated_at].join("|");}).join(";");
+  const cs=state.chapters.map(function(c){return [c.number,c.status,c.title||"",contentLen(c),(c.review&&c.review.score)||"",(c.review&&c.review.passed)?"1":"0",c.updated_at].join("|");}).join(";");
   const js=state.jobs.map(function(j){return [j.chapter_number,j.kind,j.status,j.attempts,j.updated_at].join("|");}).join(";");
   const rs=state.run?[state.run.status,state.run.current_stage||"",(state.run.stagesDetail||[]).map(function(s){return s.stage+s.state;}).join(",")].join("|"):"";
   return ns+"#"+cs+"#"+js+"#"+rs;
@@ -325,18 +378,28 @@ function renderChapterList(){
   const all=state.chapters.slice().reverse();
   if(!all.length){box.innerHTML='<div class="empty">还没有章节<br><span style="font-size:12px;color:var(--faint)">点击「＋ 生成下一章」开始</span></div>';return;}
   let list=all;
-  const q=(state.chapterQuery||"").trim().toLowerCase();
+  const q=(state.chapterQuery||"").trim();
+  let note="";
   if(q){
-    list=all.filter(function(c){
-      const m=CH[c.status]||{label:c.status};
-      const hay=(String(c.number)+" "+(c.title||"")+" "+(m.label||"")).toLowerCase();
-      return hay.indexOf(q)>=0;
-    });
-    if(!list.length){box.innerHTML='<div class="empty">没有匹配「'+esc(state.chapterQuery.trim())+'」的章节</div>';return;}
+    if(state.searchHits&&state.searchHits.query===q){
+      // Server-side search result over the WHOLE novel (not just the polled window).
+      list=state.searchHits.items.slice().reverse();
+      note='<div class="list-note">全库搜索「'+esc(q)+'」命中 '+list.length+' 章</div>';
+    }else{
+      list=all.filter(function(c){
+        const m=CH[c.status]||{label:c.status};
+        const hay=(String(c.number)+" "+(c.title||"")+" "+(m.label||"")).toLowerCase();
+        return hay.indexOf(q.toLowerCase())>=0;
+      });
+    }
+    if(!list.length){box.innerHTML=note+'<div class="empty">没有匹配「'+esc(q)+'」的章节</div>';return;}
+  }else if(state.chapters.length>=CHAPTER_FETCH_LIMIT){
+    note='<div class="list-note">已显示最近 '+state.chapters.length+' 章；输入关键词可全库搜索更早章节</div>';
+  }else if(list.length>400){
+    note='<div class="list-note">章节较多，已显示最近 400 / '+list.length+' 章（缩小搜索范围可定位更早章节）</div>';
   }
-  const capNote=(list.length>400)?'<div class="list-note">章节较多，已显示最近 400 / '+list.length+' 章（缩小搜索范围可定位更早章节）</div>':"";
   list=list.slice(0,400);
-  box.innerHTML=capNote+list.map(function(c){
+  box.innerHTML=note+list.map(function(c){
     const m=CH[c.status]||{label:c.status,icon:"•",cls:"b-CANCELLED"};
     const title=c.title||(m.busy?"生成第 "+c.number+" 章…":"（未命名）");
     const active=state.selected===c.id?" active":"";
@@ -350,6 +413,34 @@ function badge(status,m){
   m=m||CH[status]||JB[status];
   const spin=m.busy?'<span class="spin"></span>':'';
   return '<span class="badge '+m.cls+'">'+spin+m.icon+' '+m.label+'</span>';
+}
+
+/* ---------------- chapter search (server-side when the window is truncated) ---
+   The sidebar polls only the most recent CHAPTER_FETCH_LIMIT chapters. While the
+   whole list fits, matching happens instantly in memory; once the window is
+   truncated, a debounced request hits the server so search still covers the
+   entire novel instead of silently missing older chapters. */
+const CHAPTER_FETCH_LIMIT = 500;
+let searchTimer=null;
+function scheduleChapterSearch(){
+  if(searchTimer)clearTimeout(searchTimer);
+  const q=(state.chapterQuery||"").trim();
+  if(!q||state.chapters.length<CHAPTER_FETCH_LIMIT){state.searchHits=null;return;}
+  searchTimer=setTimeout(function(){serverSearchChapters(q);},250);
+}
+async function serverSearchChapters(q){
+  const n=state.novel;
+  if(!n)return;
+  const token=++state.searchToken;
+  try{
+    const hits=await api("/api/novels/"+n.id+"/chapters?light=1&limit=200&q="+encodeURIComponent(q));
+    if(token!==state.searchToken)return;                       // a newer query won
+    if((state.chapterQuery||"").trim()!==q)return;             // the box changed
+    state.searchHits={query:q,items:hits||[]};
+    renderChapterList();
+  }catch(e){
+    /* keep the local filter result; the next keystroke retries */
+  }
 }
 function renderTimeline(){
   const box=$("timeline");
@@ -502,13 +593,13 @@ function chapterActions(c){
   const editable=["WAITING_APPROVAL","DRAFT_READY","EXPORTED","FAILED"];
   acts.push('<button class="btn xs ghost" title="查看本章草稿版本并回滚" onclick="openDraftHistory(\''+esc(c.id)+'\')">📑 历史</button>');
   acts.push('<button class="btn xs ghost" title="回放本章最近一次生成的事件与打字机效果" onclick="openRunReplay(\''+esc(c.id)+'\',\''+esc(c.novel_id)+'\','+c.number+')">🎞 回放</button>');
-  if(c.content&&editable.indexOf(c.status)>=0&&c.status!=="PUBLISHED_MANUALLY")
+  if(hasBody(c)&&editable.indexOf(c.status)>=0&&c.status!=="PUBLISHED_MANUALLY")
     acts.push('<button class="btn xs" onclick="openEdit(\''+esc(c.id)+'\')">✏️ 编辑正文</button>');
-  if(c.content&&c.status!=="PUBLISHED_MANUALLY"&&c.status!=="CANCELLED")
+  if(hasBody(c)&&c.status!=="PUBLISHED_MANUALLY"&&c.status!=="CANCELLED")
     acts.push('<button class="btn xs" onclick="act(\'/api/chapters/'+esc(c.id)+'/review\',\'{}\',\'重新审查\',\'重新审查完成\')">🔍 重新审查</button>');
-  if(c.content&&(c.status==="WAITING_APPROVAL"||c.status==="DRAFT_READY")&&c.review&&c.review.passed)
+  if(hasBody(c)&&(c.status==="WAITING_APPROVAL"||c.status==="DRAFT_READY")&&c.review&&c.review.passed)
     acts.push('<button class="btn xs success" onclick="act(\'/api/chapters/'+esc(c.id)+'/approve\',\'{}\',\'批准\',\'已批准\')">✅ 批准</button>');
-  if(c.content&&(c.status==="WAITING_APPROVAL"||c.status==="DRAFT_READY"||c.status==="EXPORTED")&&c.review&&c.review.passed){
+  if(hasBody(c)&&(c.status==="WAITING_APPROVAL"||c.status==="DRAFT_READY"||c.status==="EXPORTED")&&c.review&&c.review.passed){
     acts.push('<button class="btn xs" onclick="exportChapter(\''+esc(c.id)+'\',\''+esc(c.novel_id)+'\','+c.number+',\'txt\')">TXT</button>');
     acts.push('<button class="btn xs" onclick="exportChapter(\''+esc(c.id)+'\',\''+esc(c.novel_id)+'\','+c.number+',\'md\')">MD</button>');
     acts.push('<button class="btn xs" onclick="exportChapter(\''+esc(c.id)+'\',\''+esc(c.novel_id)+'\','+c.number+',\'json\')">JSON</button>');
@@ -516,7 +607,7 @@ function chapterActions(c){
   }
   if(c.status==="EXPORTED")
     acts.push('<button class="btn xs" onclick="openPublish(\''+esc(c.id)+'\',\''+esc(c.novel_id)+'\','+c.number+')">🚀 已人工发布</button>');
-  if(c.status==="FAILED"&&!c.content&&c.novel_id)
+  if(c.status==="FAILED"&&!hasBody(c)&&c.novel_id)
     acts.push('<button class="btn xs danger" onclick="retryChapter(\''+esc(c.novel_id)+'\','+c.number+')">↻ 重试生成</button>');
   const n=state.novel;
   const isBusy=!!(CH[c.status]&&CH[c.status].busy);
@@ -526,7 +617,7 @@ function chapterActions(c){
 }
 function renderReader(){
   const box=$("reader");
-  const c=state.chapters.find(function(x){return x.id===state.selected;});
+  const c=chapterOf(state.selected);
   if(!c){
     box.innerHTML='<div class="empty" style="padding-top:80px"><div class="big">📖</div><p>选择左侧章节开始阅读，或点击「＋ 生成下一章」开始创作。</p></div>';
     return;
@@ -536,7 +627,7 @@ function renderReader(){
   if(c.status==="FAILED"){
     if(c.review&&c.review.blockingIssues&&c.review.blockingIssues.length)
       fail='<div class="ch-fail"><div class="t">⚠️ 自动审查未通过</div><ul class="probs">'+c.review.blockingIssues.map(function(x){return '<li class="p-bad">'+esc(codeMsg(x))+'</li>';}).join("")+'</ul></div>';
-    else if(!c.content){
+    else if(!hasBody(c)){
       const job=state.jobs.find(function(j){return j.chapter_number===c.number&&j.status==="FAILED";});
       fail='<div class="ch-fail"><div class="t">✖️ 本章生成失败</div><div>'+esc(job?flattenError(job.error):"")+'</div></div>';
     }
@@ -557,12 +648,17 @@ function renderReader(){
       '</details>';
   }
   let outline="";
-  if(c.chapterGoal||(c.beats&&c.beats.length)||c.nextChapterHook){
+  // Persisted rows expose the snake_case projection (``goal``/``hook``); the
+  // model contract uses ``chapterGoal``/``nextChapterHook``. Read both so the
+  // 本章梗概 panel actually shows the goal and hook that are stored in the DB.
+  const goal=c.chapterGoal||c.goal||"";
+  const hook=c.nextChapterHook||c.hook||"";
+  if(goal||(c.beats&&c.beats.length)||hook){
     const beats=(c.beats||[]).map(function(b){return '<li>'+esc(typeof b==="string"?b:(b.goal||JSON.stringify(b)))+'</li>';}).join("");
     outline='<div class="outline-box"><h4>🧭 本章梗概</h4>'+
-      (c.chapterGoal?'<div style="margin-bottom:6px"><b>目标：</b>'+esc(c.chapterGoal)+'</div>':'')+
+      (goal?'<div style="margin-bottom:6px"><b>目标：</b>'+esc(goal)+'</div>':'')+
       (beats?'<ul class="probs">'+beats+'</ul>':'')+
-      (c.nextChapterHook?'<div style="margin-top:6px"><b>下章钩子：</b>'+esc(c.nextChapterHook)+'</div>':'')+
+      (hook?'<div style="margin-top:6px"><b>下章钩子：</b>'+esc(hook)+'</div>':'')+
       '</div>';
   }
   const sorted=state.chapters.slice().sort(function(a,b){return a.number-b.number;});
@@ -574,16 +670,20 @@ function renderReader(){
     '<span class="nav-num">'+c.number+' / '+sorted.length+'</span>'+
     '<button class="btn xs nav" '+(nextC?'onclick="openChapter(\''+esc(nextC.id)+'\')"':'disabled')+'>下一章 ▶</button>'+
     '</div>';
-  const meta=c.content
-    ? '正文约 '+fmtNum(c.content.length)+' 字 · '+(c.model?esc(c.model):"")+' · '+esc(timeAgo(c.generated_at||c.updated_at))
+  const meta=hasBody(c)
+    ? '正文约 '+fmtNum(contentLen(c))+' 字 · '+(c.model?esc(c.model):"")+' · '+esc(timeAgo(c.generated_at||c.updated_at))
     : esc(timeAgo(c.updated_at));
   let bodyHtml;
   if(revealActive(c.number)){
     const r=state.reveal;
     bodyHtml='<div class="reader"><div class="live-prose" id="liveProse">'+esc(r.full.slice(0,r.shown))+'</div><span class="caret"></span></div>';
-  }else if((CH[c.status]&&CH[c.status].busy)&&!c.content){
+  }else if((CH[c.status]&&CH[c.status].busy)&&!hasBody(c)){
     const label=(CH[c.status]&&CH[c.status].label)||c.status;
     bodyHtml='<div class="reader"><p class="genhint"><span class="spin"></span> '+label+'… 已接收 '+fmtNum(state.streaming.chars)+' 字</p></div>';
+  }else if(!c.content&&contentLen(c)>0){
+    // The list is polled without prose bodies; the full text is on its way.
+    bodyHtml='<div class="reader"><p class="genhint"><span class="spin"></span> 正在加载正文…</p></div>';
+    ensureDetail(c.id);
   }else{
     const _blocks=proseBlocks(c.content);
     if(_blocks.length>250&&!state.readerExpand){
@@ -648,7 +748,7 @@ async function generateNext(){
   if(state.busy)return;
   const nextNum=(n.current_chapter||0)+1;
   const blk=state.chapters.find(function(c){return c.number===nextNum;});
-  if(blk&&blk.content&&["WAITING_APPROVAL","DRAFT_READY","EXPORTED"].indexOf(blk.status)>=0)
+  if(blk&&hasBody(blk)&&["WAITING_APPROVAL","DRAFT_READY","EXPORTED"].indexOf(blk.status)>=0)
     return toast("第 "+nextNum+" 章尚未完成「批准 → 导出 → 已人工发布」确认，请先完成后再生成下一章。","warn");
   const cfg=flowConfig();
   const body=cfg?JSON.stringify({config:cfg}):"{}";
@@ -658,7 +758,7 @@ async function generateNext(){
     toast("已排队生成第 "+nextNum+" 章","ok");
     await refresh(true);
     const nc=state.chapters.find(function(x){return x.number===nextNum;});
-    if(nc){state.selected=nc.id;renderChapterList();renderReader();}
+    if(nc){state.selected=nc.id;renderChapterList();renderReader();ensureDetail(nc.id);}
   }catch(e){errToast(e);}
 }
 async function retryChapter(nid,number){
@@ -692,13 +792,15 @@ async function exportChapter(cid,nid,number,fmt){
   }catch(e){errToast(e,"导出失败：");}
 }
 function openEdit(cid){
-  const c=state.chapters.find(function(x){return x.id===cid;});
-  if(!c)return;
-  openModal("✏️ 编辑正文（第 "+c.number+" 章）",
-    '<label class="f">章节标题<input type="text" id="mTitle" value="'+esc(c.title||"")+'"></label>'+
-    '<label class="f">正文（保存后自动进入待审查）<textarea id="mContent" rows="14" style="min-height:320px">'+esc(c.content||"")+'</textarea></label>',
-    [{label:"保存",primary:true,fn:function(){submitEdit(cid);}},
-     {label:"取消",primary:false,fn:closeModal}]);
+  return ensureDetail(cid).then(function(detail){
+    const c=detail||chapterOf(cid);
+    if(!c)return;
+    openModal("✏️ 编辑正文（第 "+c.number+" 章）",
+      '<label class="f">章节标题<input type="text" id="mTitle" value="'+esc(c.title||"")+'"></label>'+
+      '<label class="f">正文（保存后自动进入待审查）<textarea id="mContent" rows="14" style="min-height:320px">'+esc(c.content||"")+'</textarea></label>',
+      [{label:"保存",primary:true,fn:function(){submitEdit(cid);}},
+       {label:"取消",primary:false,fn:closeModal}]);
+  });
 }
 async function submitEdit(cid){
   const body={title:$("mTitle").value,content:$("mContent").value};
@@ -735,7 +837,7 @@ async function submitPublish(cid,nid,number){
 function sleep(ms){return new Promise(function(r){setTimeout(r,ms);});}
 let dhCtx=null;
 async function openDraftHistory(cid){
-  const c=state.chapters.find(function(x){return x.id===cid;});
+  const c=await ensureDetail(cid)||chapterOf(cid);
   if(!c)return;
   let data;
   try{data=await api("/api/chapters/"+cid+"/history");}
@@ -1059,7 +1161,7 @@ async function refresh(manual){
       state.novel=pick;$("novels").value=pick.id;
       const res=await Promise.all([
         api("/api/novels/"+pick.id),
-        api("/api/novels/"+pick.id+"/chapters"),
+        api("/api/novels/"+pick.id+"/chapters?light=1&limit=500"),
         api("/api/novels/"+pick.id+"/jobs"),
         api("/api/novels/"+pick.id+"/usage"),
         api("/api/novels/"+pick.id+"/runs/latest")
@@ -1075,6 +1177,7 @@ async function refresh(manual){
       if(state.selected)saveLast(pick.id,state.selected);
     }else{
       state.novel=null;state.chapters=[];state.jobs=[];state.usage=[];state.run=null;
+      state.detail={id:"",chapter:null};
       if(state.selected)state.selected=null;
     }
     setConn(true);
@@ -1199,10 +1302,12 @@ $("saveBible").addEventListener("click",async function(){
 
 /* ---------------- novel bar ---------------- */
 /* ---------------- novel bar ---------------- */
-$("novels").addEventListener("change",function(){state.chapterQuery="";if($("chapterFilter"))$("chapterFilter").value="";refresh(true);});
+$("novels").addEventListener("change",function(){state.chapterQuery="";state.searchHits=null;if($("chapterFilter"))$("chapterFilter").value="";refresh(true);});
 $("chapterFilter").addEventListener("input",function(){
   state.chapterQuery=$("chapterFilter").value;
+  state.searchHits=null;   // instant local filter first, server search after debounce
   renderChapterList();
+  scheduleChapterSearch();
 });
 $("generate").addEventListener("click",generateNext);
 $("exportBookTxt").addEventListener("click",function(){exportBook("txt");});
@@ -1216,7 +1321,7 @@ $("resume").addEventListener("click",async function(){
     toast("已恢复写作并生成下一章","ok");
     await refresh(true);
     const rc=state.chapters.find(function(x){return x.number===(n.current_chapter||0)+1;});
-    if(rc){state.selected=rc.id;renderChapterList();renderReader();}
+    if(rc){state.selected=rc.id;renderChapterList();renderReader();ensureDetail(rc.id);}
   }catch(e){
     if(e.status===409&&/confirm_previous_chapter_first/.test(e.data.message||"")){
       const num=(e.data.details&&e.data.details.chapterNumber)||(n.current_chapter||0)+1;

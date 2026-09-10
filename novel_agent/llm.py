@@ -31,6 +31,7 @@ from tenacity import (
 )
 
 from .deepseek import DeepSeekError
+from .prompts import VERSION as PROMPT_VERSION
 
 logger = logging.getLogger(__name__)
 
@@ -229,7 +230,7 @@ class AsyncLLMClient:
             "type": "usage",
             "usage": {
                 "model": self.config.model,
-                "prompt_version": "novel-writer@1",
+                "prompt_version": PROMPT_VERSION,
                 "input_tokens": usage.get("prompt_tokens", 0),
                 "output_tokens": usage.get("completion_tokens", 0),
                 "duration_ms": elapsed_ms,

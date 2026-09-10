@@ -76,12 +76,6 @@ class EventRepository:
         ).fetchall()
         return [self._hydrate(r) for r in rows]
 
-    def latest_id(self, novel_id):
-        row = self.db.execute(
-            "SELECT MAX(id) AS m FROM events WHERE novel_id=?", (novel_id,)
-        ).fetchone()
-        return int(row["m"] or 0)
-
     def chapter_events(self, novel_id, chapter_number, since=0, limit=300):
         """Events whose payload belongs to one chapter (used to replay a run)."""
         rows = self.db.execute(

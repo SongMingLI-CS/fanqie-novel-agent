@@ -67,7 +67,7 @@ class NovelService:
                 {"chapter": job["chapter_number"], "text": output["content"]},
             )
     def context(self,nid,number):
-        novel=self.store.get_novel(nid); recent=self.store.recent(nid); bible=self.compact_bible(novel['story_bible'])
+        novel=self.store.get_novel(nid); recent=self.store.recent(nid,before=number); bible=self.compact_bible(novel['story_bible'])
         refs=self.root/'.agents/skills/novel-writer/references'; skill='\n'.join((refs/x).read_text(encoding='utf-8') for x in ('story-bible.md','style-rules.md','chapter-template.md','review-rubric.md'))
         return novel,recent,bible,skill
 

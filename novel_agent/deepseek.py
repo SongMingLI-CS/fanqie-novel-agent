@@ -1,5 +1,7 @@
 import http.client, json, logging, os, re, socket, ssl, time, urllib.parse, urllib.request, urllib.error
 
+from .prompts import VERSION as PROMPT_VERSION
+
 logger=logging.getLogger(__name__)
 
 
@@ -37,7 +39,7 @@ class DeepSeekClient:
                 message=message['content']; usage=data.get('usage',{})
                 if not message.strip(): raise DeepSeekError('DeepSeek returned empty message.content','empty_content')
                 elapsed=round((time.monotonic()-started)*1000); logger.info('deepseek request succeeded status=200 duration_ms=%s',elapsed)
-                return message, {'model':self.config.model,'prompt_version':'novel-writer@1','input_tokens':usage.get('prompt_tokens',0),'output_tokens':usage.get('completion_tokens',0),'duration_ms':elapsed,'request_status':'succeeded'}
+                return message, {'model':self.config.model,'prompt_version':PROMPT_VERSION,'input_tokens':usage.get('prompt_tokens',0),'output_tokens':usage.get('completion_tokens',0),'duration_ms':elapsed,'request_status':'succeeded'}
             except Exception as exc:
                 last=exc if isinstance(exc,DeepSeekError) else self._classified_error(exc)
                 logger.warning('deepseek request failed category=%s status=%s attempt=%s duration_ms=%s',last.category,last.status or '-',attempt+1,round((time.monotonic()-started)*1000))

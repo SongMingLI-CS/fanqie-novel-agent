@@ -6,7 +6,7 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from .models import ChapterStatus
+from .models import ACTIVE, ChapterStatus, TERMINAL
 
 # Keep at most this many story_bibles rows per novel to stop unbounded table growth.
 _KEEP_BIBLE_VERSIONS = 20
@@ -72,6 +72,9 @@ class Store:
         self._ensure_column(conn, 'events', 'chapter', 'INTEGER')
         conn.execute("CREATE INDEX IF NOT EXISTS idx_events_novel ON events(novel_id, id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_events_chapter ON events(novel_id, chapter, id)")
+        # Retention pruning deletes by created_at; without this index it is a
+        # full scan of the event bus on every server/worker start.
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_events_created ON events(created_at)")
         conn.execute(
             "UPDATE events SET chapter=CAST(json_extract(payload,'$.chapter') AS INTEGER) "
             "WHERE chapter IS NULL AND json_extract(payload,'$.chapter') IS NOT NULL"
@@ -180,10 +183,25 @@ class Store:
         return self.get_novel(nid)
 
     def novels(self):
-        return [
-            self.get_novel(r[0])
-            for r in self.db.execute("SELECT id FROM novels ORDER BY updated_at DESC")
-        ]
+        """List every novel with its current bible in a single query.
+
+        Replaces an N+1 (one ``get_novel`` — itself two queries — per novel).
+        """
+        rows = self.db.execute(
+            "SELECT n.*, b.content AS bible_content FROM novels n "
+            "LEFT JOIN story_bibles b ON b.novel_id = n.id "
+            "AND b.version = n.story_bible_version ORDER BY n.updated_at DESC"
+        ).fetchall()
+        result = []
+        for row in rows:
+            novel = dict(row)
+            content = novel.pop("bible_content", None)
+            try:
+                novel["story_bible"] = json.loads(content) if content else {}
+            except (TypeError, ValueError):
+                novel["story_bible"] = {}
+            result.append(novel)
+        return result
 
     def get_novel(self, nid):
         row = self.db.execute("SELECT * FROM novels WHERE id=?", (nid,)).fetchone()
@@ -357,9 +375,13 @@ class Store:
             )
             conn.execute(
                 "UPDATE chapters SET status='CANCELLED',updated_at=? "
-                "WHERE novel_id=? AND number=? AND status IN "
-                "('PENDING','PLANNING','GENERATING','REVIEWING')",
-                (now(), row["novel_id"], row["chapter_number"]),
+                "WHERE novel_id=? AND number=? AND status IN (?,?,?,?)",
+                (
+                    now(), row["novel_id"], row["chapter_number"],
+                    # Only in-flight (ACTIVE) chapters may be cancelled; a
+                    # finished draft keeps its reviewable state.
+                    *sorted(s.value for s in ACTIVE),
+                ),
             )
             cancelled = (row["novel_id"], row["chapter_number"])
         self.record_audit(cancelled[0], "job_cancelled", {"job": jid, "chapter": cancelled[1]})
@@ -406,7 +428,7 @@ class Store:
             ).fetchone()
             if not now_status:
                 raise ValueError("chapter_not_found")
-            if now_status["status"] in ("PENDING", "PLANNING", "GENERATING", "REVIEWING"):
+            if now_status["status"] in ACTIVE:
                 raise ValueError("chapter_busy")
             active = conn.execute(
                 "SELECT 1 FROM jobs WHERE novel_id=? AND chapter_number=? "
@@ -489,42 +511,107 @@ class Store:
 
     # -- chapters ------------------------------------------------------------
 
+    # JSON-encoded columns on ``chapters`` and their decoded empty value.
+    _CHAPTER_JSON_FIELDS = (
+        ("beats", []), ("characters", []), ("events", []),
+        ("foreshadowing_added", []), ("foreshadowing_resolved", []),
+        ("state_changes", []), ("review", {}), ("proposed_state", {}),
+        ("publish_record", {}),
+    )
+
+    @classmethod
+    def _hydrate_chapter(cls, row):
+        """Row -> chapter dict, decoding the JSON columns exactly once.
+
+        Every chapter read path funnels through here so ``chapter()``,
+        ``chapters()`` and ``published_chapters()`` can never drift in how they
+        decode a column (or how they tolerate a malformed value).
+        """
+        result = dict(row)
+        for key, empty in cls._CHAPTER_JSON_FIELDS:
+            raw = result.get(key)
+            if raw in (None, ""):
+                result[key] = empty() if callable(empty) else empty
+                continue
+            try:
+                result[key] = json.loads(raw)
+            except (TypeError, ValueError):
+                result[key] = empty() if callable(empty) else empty
+        return result
+
     def chapter(self, nid, number):
         row = self.db.execute(
             "SELECT * FROM chapters WHERE novel_id=? AND number=?", (nid, number)
         ).fetchone()
-        if not row:
-            return None
-        result = dict(row)
-        for key in (
-            "beats", "characters", "events", "foreshadowing_added",
-            "foreshadowing_resolved", "state_changes", "review", "proposed_state",
-            "publish_record",
-        ):
-            result[key] = json.loads(
-                result[key] or ("{}" if key in ("review", "proposed_state", "publish_record") else "[]")
-            )
-        return result
+        return self._hydrate_chapter(row) if row else None
 
     def chapters(self, nid):
-        return [
-            self.chapter(nid, r[0])
-            for r in self.db.execute(
-                "SELECT number FROM chapters WHERE novel_id=? ORDER BY number", (nid,)
-            ).fetchall()
-        ]
+        """All chapters of a novel in one query (was one query per chapter)."""
+        rows = self.db.execute(
+            "SELECT * FROM chapters WHERE novel_id=? ORDER BY number", (nid,)
+        ).fetchall()
+        return [self._hydrate_chapter(r) for r in rows]
+
+    # Non-body columns of ``chapters`` used by the console's chapter list.
+    _CHAPTER_SUMMARY_COLUMNS = (
+        "id,novel_id,number,status,title,goal,beats,summary,characters,"
+        "events,foreshadowing_added,foreshadowing_resolved,state_changes,hook,"
+        "review,model,generated_at,exported_at,published_at,publish_record,"
+        "created_at,updated_at"
+    )
+
+    def chapter_summaries(self, nid, query=None, limit=None, offset=0):
+        """Chapter list without the (potentially very large) prose bodies.
+
+        The console polls this while a generation runs, so shipping every
+        chapter's full text on each tick is wasteful once a novel grows to
+        hundreds of chapters. Each item keeps every non-body field plus a
+        ``content_length`` so the UI can still tell whether a body exists.
+
+        ``query`` runs a real server-side search (title / number / status / goal)
+        instead of forcing the client to download the whole novel and filter it.
+        When a ``limit`` is supplied without a query the *most recent* chapters
+        are returned (oldest first), which is what a sidebar wants.
+        """
+        sql = (
+            "SELECT " + self._CHAPTER_SUMMARY_COLUMNS +
+            ",length(content) AS content_length FROM chapters WHERE novel_id=?"
+        )
+        args = [nid]
+        query = (query or "").strip()
+        if query:
+            needle = "%" + query + "%"
+            sql += (" AND (title LIKE ? OR CAST(number AS TEXT) LIKE ? "
+                    "OR status LIKE ? OR goal LIKE ?)")
+            args.extend([needle, needle, needle, needle])
+        recent_window = limit is not None and not query
+        sql += " ORDER BY number " + ("DESC" if recent_window else "ASC")
+        if limit is not None:
+            sql += " LIMIT ? OFFSET ?"
+            args.extend([max(1, int(limit)), max(0, int(offset))])
+        rows = self.db.execute(sql, args).fetchall()
+        if recent_window:
+            rows = list(reversed(rows))
+        result = []
+        for row in rows:
+            item = self._hydrate_chapter(row)
+            item["content"] = ""
+            result.append(item)
+        return result
 
     def published_chapters(self, nid):
         """Chapters that are safe to include in a whole-book export.
 
         Only chapters that already reached EXPORTED or PUBLISHED_MANUALLY carry
         the review-passed guarantee enforced by the single-chapter export gate.
+        Filtered in SQL so a long novel never materialises discarded rows.
         """
-        return [
-            c for c in self.chapters(nid)
-            if c.get("content")
-            and c.get("status") in ("PUBLISHED_MANUALLY", "EXPORTED")
-        ]
+        rows = self.db.execute(
+            "SELECT * FROM chapters WHERE novel_id=? AND content<>'' "
+            "AND status IN ('PUBLISHED_MANUALLY','EXPORTED') ORDER BY number",
+            (nid,),
+        ).fetchall()
+        return [self._hydrate_chapter(r) for r in rows]
 
     def chapter_by_id(self, cid):
         row = self.db.execute(
@@ -580,19 +667,48 @@ class Store:
         ).fetchone()
         return self._draft_payload(row["payload"]) if row else None
 
-    def recent(self, nid, limit=3):
-        return self.chapters(nid)[-limit:]
+    def recent(self, nid, limit=3, before=None):
+        """The last ``limit`` chapters, oldest first.
+
+        ``before`` restricts the window to chapters strictly *below* that number.
+        Reviewing or regenerating an existing chapter needs that: the chapter
+        itself (and anything after it) must not count as "recent context", or the
+        reviewer would flag the chapter's own prose as ``recent_chapter_overlap``.
+
+        Bounded in SQL: the previous implementation loaded *every* chapter (with
+        its full prose body) just to slice off the tail, so prompt assembly for a
+        long novel read and parsed the whole book on each generation.
+        """
+        limit = max(0, int(limit))
+        if limit == 0:
+            return []
+        sql = "SELECT * FROM chapters WHERE novel_id=?"
+        args = [nid]
+        if before is not None:
+            sql += " AND number < ?"
+            args.append(int(before))
+        sql += " ORDER BY number DESC LIMIT ?"
+        args.append(limit)
+        rows = self.db.execute(sql, args).fetchall()
+        return [self._hydrate_chapter(r) for r in reversed(rows)]
 
     def record_review(self, cid, result):
+        """Persist a review result without downgrading a finished chapter.
+
+        A manual re-review of an already ``EXPORTED`` (or published) chapter must
+        not push it back to ``WAITING_APPROVAL``/``FAILED``: the manual-publish
+        gate requires ``EXPORTED``, so a harmless re-review would otherwise strand
+        a healthy, already-exported chapter in a state it can never leave.
+        """
+        passed = bool(result.get("passed"))
+        status = "WAITING_APPROVAL" if passed else "FAILED"
+        current = self.chapter_by_id(cid)
+        if current and current.get("status") in ("EXPORTED", "PUBLISHED_MANUALLY"):
+            status = current["status"]
         with self.tx():
             self.db.execute(
                 "UPDATE chapters SET review=?,status=?,updated_at=? WHERE id=?",
-                (
-                    dumps(result),
-                    "WAITING_APPROVAL" if result.get("passed") else "FAILED",
-                    now(),
-                    cid,
-                ),
+                (dumps(result), status, now(), cid),
             )
 
     def set_status(self, nid, number, status):
@@ -621,6 +737,13 @@ class Store:
         ch = self.chapter_by_id(cid)
         if not ch:
             raise ValueError("chapter_not_found")
+        # Terminal chapters are frozen. Publishing is the point of no return for
+        # a chapter's body text (a cancelled chapter is likewise not resurrected
+        # by an edit). Without this guard a plain PATCH silently rewrote already
+        # published prose and demoted the chapter out of PUBLISHED_MANUALLY,
+        # which also bypassed the manual-publish audit trail.
+        if ch.get("status") in TERMINAL:
+            raise ValueError("chapter_is_terminal")
         allowed = {k: changes[k] for k in ("title", "goal", "content", "summary", "hook") if k in changes}
         if not allowed:
             raise ValueError("no_editable_fields")
@@ -792,6 +915,19 @@ class Store:
                 (str(path), now(), job["id"]),
             )
 
+    def fail_export_job(self, job, error):
+        """Record a failed export so operators can see why no file was written.
+
+        Without this the row stayed ``PENDING`` forever after an I/O error and the
+        idempotency check would keep reporting a job that never produced a file.
+        A later retry flips the same row back to ``SUCCEEDED``.
+        """
+        with self.tx():
+            self.db.execute(
+                "UPDATE export_jobs SET status='FAILED',error=?,updated_at=? WHERE id=?",
+                (str(error)[:500], now(), job["id"]),
+            )
+
     # -- observability -------------------------------------------------------
 
     def record_audit(self, novel_id, action, detail=None):
@@ -836,7 +972,7 @@ class Store:
             "COALESCE(SUM(input_tokens),0) AS input_tokens, "
             "COALESCE(SUM(output_tokens),0) AS output_tokens, "
             "COALESCE(SUM(duration_ms),0) AS duration_ms "
-            "FROM usage WHERE substr(created_at,1,10) >= ? GROUP BY day ORDER BY day",
+            "FROM usage WHERE created_at >= ? GROUP BY day ORDER BY day",
             (start,),
         ).fetchall()
         by_day = {r["day"]: r for r in rows}

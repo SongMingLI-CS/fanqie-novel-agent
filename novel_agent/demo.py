@@ -49,7 +49,6 @@ from .service import NovelService
 from .store import Store
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_PORT = None  # replay without --port is headless
 
 
 class DemoServer:

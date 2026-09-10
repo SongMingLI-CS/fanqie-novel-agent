@@ -18,7 +18,7 @@ from .envfile import load_env
 from .events import EventRepository
 from .exporters import EXPORT_FORMATS, export_book, export_chapter
 from .logutil import setup_logging
-from .reviewer import review
+from .reviewer import chapter_as_output, review
 from .service import NovelService
 from .store import Store
 
@@ -80,6 +80,7 @@ def _conflict_message(message):
         "chapter_already_published",
         "only_latest_draft_can_be_rewritten",
         "chapter_busy",
+        "chapter_is_terminal",
     )
 
 
@@ -122,6 +123,17 @@ def _sanitize_run_config(data):
             raise ApiError(400, "invalid_request", "autoExportTxt_must_be_a_boolean")
         result["autoExportTxt"] = data["autoExportTxt"]
     return result or None
+
+
+def _bible_chapter_length(bible):
+    """Resolve the StoryBible's target chapter length (0 when unset/malformed)."""
+    rules = bible.get("styleRules") if isinstance(bible, dict) else None
+    if not isinstance(rules, dict):
+        return 0
+    value = rules.get("chapterLength", 0)
+    if isinstance(value, bool) or not isinstance(value, int):
+        return 0
+    return max(0, value)
 
 
 def resolve_static_dir(config_value):
@@ -410,6 +422,26 @@ class Handler(BaseHTTPRequestHandler):
             return self._reply(200, self._novel_or_404(parts[2]))
         if len(parts) == 4 and parts[:2] == ["api", "novels"] and parts[3] == "chapters":
             self._novel_or_404(parts[2])
+            query = parse_qs(urlparse(self.path).query)
+            # ``?light=1`` omits prose bodies so the console can poll the chapter
+            # list cheaply on long novels (each body is fetched per chapter).
+            # ``?q=<text>`` performs a real server-side search and ``?limit=N``
+            # bounds the window, so the client never has to download and filter
+            # the whole novel.
+            light = (query.get("light") or ["0"])[0] in ("1", "true", "yes")
+            search = (query.get("q") or [""])[0]
+            raw_limit = (query.get("limit") or [None])[0]
+            limit = None
+            if raw_limit is not None:
+                try:
+                    limit = max(1, min(int(raw_limit), 5000))
+                except (TypeError, ValueError):
+                    raise ApiError(400, "invalid_request", "limit_must_be_an_integer")
+            if light or search or limit is not None:
+                return self._reply(200, [
+                    _public_chapter(c)
+                    for c in store.chapter_summaries(parts[2], query=search, limit=limit)
+                ])
             return self._reply(200, [_public_chapter(c) for c in store.chapters(parts[2])])
         if len(parts) == 4 and parts[:2] == ["api", "novels"] and parts[3] == "jobs":
             self._novel_or_404(parts[2])
@@ -534,8 +566,11 @@ class Handler(BaseHTTPRequestHandler):
             if number < 1:
                 raise ApiError(400, "invalid_request", "chapter_number_must_be_positive")
             self._assert_chapter_generatable(novel, number)
-            job, created = store.create_job(parts[2], number)
+            # Validate the optional run config *before* creating the job: a
+            # rejected config must not leave an orphan PENDING job behind that a
+            # worker would then silently start with default settings.
             run_config = _sanitize_run_config(data.get("config"))
+            job, created = store.create_job(parts[2], number)
             if run_config:
                 job = store.set_job_config(job["id"], run_config)
             return self._reply(202 if created else 200, job)
@@ -552,8 +587,8 @@ class Handler(BaseHTTPRequestHandler):
             novel = self._novel_or_404(parts[2])
             store.set_paused(parts[2], False)
             self._assert_chapter_generatable(novel, novel["current_chapter"] + 1)
-            job, created = store.create_job(parts[2], novel["current_chapter"] + 1)
             run_config = _sanitize_run_config(data.get("config"))
+            job, created = store.create_job(parts[2], novel["current_chapter"] + 1)
             if run_config:
                 job = store.set_job_config(job["id"], run_config)
             try:
@@ -596,10 +631,18 @@ class Handler(BaseHTTPRequestHandler):
             if chapter is None:
                 raise ApiError(404, "not_found", "Chapter not found")
             novel = store.get_novel(chapter["novel_id"])
+            bible = (novel or {}).get("story_bible", {})
             result = review(
-                chapter,
-                (novel or {}).get("story_bible", {}),
-                store.recent(chapter["novel_id"]),
+                # Translate the persisted (snake_case) row into the model-output
+                # contract the reviewer reads, otherwise every manual re-review
+                # reported a bogus ``missing_chapter_goal`` blocking issue.
+                chapter_as_output(chapter),
+                bible,
+                # Exclude the chapter under review (and later chapters) from the
+                # "recent context" window, otherwise its own prose is reported
+                # as recent_chapter_overlap.
+                store.recent(chapter["novel_id"], before=chapter["number"]),
+                _bible_chapter_length(bible),
             )
             store.record_review(parts[2], result)
             return self._reply(200, result)
@@ -609,7 +652,11 @@ class Handler(BaseHTTPRequestHandler):
             chapter = store.chapter_by_id(parts[2])
             if chapter is None:
                 raise ApiError(404, "not_found", "Chapter not found")
-            if chapter.get("review", {}).get("blockingIssues"):
+            # Server-side gate: approving is only meaningful for a chapter whose
+            # latest review actually passed. Relying on the UI alone would let a
+            # hand-crafted request approve an unreviewed/edited draft.
+            current_review = chapter.get("review") or {}
+            if not current_review.get("passed") or current_review.get("blockingIssues"):
                 raise ApiError(409, "conflict", "chapter_cannot_be_approved")
             store.set_status(chapter["novel_id"], chapter["number"], "DRAFT_READY")
             return self._reply(200, _public_chapter(store.chapter_by_id(parts[2])))
@@ -671,7 +718,21 @@ class Handler(BaseHTTPRequestHandler):
                 {"path": existing["path"], "status": "EXPORTED", "idempotent": True},
             )
         export_job, _created = store.create_export_job(chapter, fmt)
-        path = export_chapter(chapter, novel, fmt, config.data_dir / "exports")
+        try:
+            path = export_chapter(chapter, novel, fmt, config.data_dir / "exports")
+        except ValueError as exc:
+            # exporters re-checks the review gate; keep the failure visible.
+            store.fail_export_job(export_job, f"ValueError: {exc}")
+            raise ApiError(409, "conflict", "chapter_not_ready_for_export") from exc
+        except OSError as exc:
+            # Persist the reason (instead of leaving the job PENDING forever) and
+            # return a stable error code rather than a bare 500.
+            store.fail_export_job(export_job, f"{type(exc).__name__}: {exc}")
+            logger.warning(
+                "export failed novel=%s chapter=%s format=%s error=%s",
+                nid, chapter["number"], fmt, type(exc).__name__,
+            )
+            raise ApiError(500, "export_failed", "chapter_export_failed") from exc
         store.complete_export_job(export_job, path)
         store.record_export(nid, chapter["number"])
         return self._reply(
@@ -692,7 +753,14 @@ class Handler(BaseHTTPRequestHandler):
         chapters = store.published_chapters(nid)
         if not chapters:
             raise ApiError(409, "conflict", "no_published_chapters")
-        path = export_book(novel, chapters, fmt, config.data_dir / "exports")
+        try:
+            path = export_book(novel, chapters, fmt, config.data_dir / "exports")
+        except OSError as exc:
+            logger.warning(
+                "book export failed novel=%s format=%s error=%s",
+                nid, fmt, type(exc).__name__,
+            )
+            raise ApiError(500, "export_failed", "book_export_failed") from exc
         store.record_audit(nid, "book_export", {
             "format": fmt, "chapters": len(chapters), "path": str(path),
         })
