@@ -29,6 +29,11 @@
 
 章节任务允许：`PENDING -> PLANNING -> GENERATING -> REVIEWING -> DRAFT_READY -> WAITING_APPROVAL -> EXPORTED -> PUBLISHED_MANUALLY`。任何可恢复异常可进入 `FAILED`；用户取消进入 `CANCELLED`。`PUBLISHED_MANUALLY` 和 `CANCELLED` 为终态。仅 `DRAFT_READY/WAITING_APPROVAL` 可进入导出前检查，且 `ReviewResult.passed=true`、`blocking_issues` 必须为空。
 
+终态在服务端是**冻结的**：`models.TERMINAL` 中的章节正文不可再被编辑、回滚或重写
+（`PATCH /api/chapters/<id>` 返回 `409 chapter_is_terminal`）。这是「发布即不可回退」审计不变量的
+执行点，而不是仅靠前端隐藏按钮。`models.ACTIVE`（`PENDING/PLANNING/GENERATING/REVIEWING`）同样
+是取消任务与重写判定使用的唯一来源。
+
 ## 事务边界
 
 1. 创建 Novel 与初始 StoryBibleVersion 在一个事务中完成。

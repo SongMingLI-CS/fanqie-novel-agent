@@ -8,9 +8,20 @@
 
 代码中的 `publishers.py` 提供 `DryRunPublisher`、`LocalFilePublisher` 和 `ExternalPublisher` 契约。前两者只产生 dry-run 结果或本地文件；`ExternalPublisher` 没有默认实现，避免误接入外部平台。
 
+诚实边界：运行中的导出链路（`POST /api/chapters/<id>/export`、整本导出、自动导出草稿）**直接使用
+`novel_agent/exporters.py`**，`publishers.py` 目前只作为后续接入真实平台 API 的适配器接缝存在，并仅由
+`tests/test_publishers.py` 覆盖；它不会在服务端进程中实例化，也不会被隐式调用。
+
 ## 发布前门禁
 
 服务端必须确认：任务为 `DRAFT_READY` 或 `WAITING_APPROVAL`；审查无阻断问题；章节内容完整；章节尚未导出；导出幂等键未成功使用；审核策略允许。`NOVEL_PUBLISH_ENABLED` 保持默认 `false`，本版本只允许导出和人工确认，不允许自动发布。
+
+门禁全部在服务端执行（前端隐藏按钮只是附加提示）：
+
+- 批准要求最近一次审查 `passed=true` 且无 `blockingIssues`，否则 `409 chapter_cannot_be_approved`。
+- 重新审查已 `EXPORTED` 的章节不会把它打回 `WAITING_APPROVAL`（否则「先导出再人工发布」会断链）。
+- 终态章节（`PUBLISHED_MANUALLY` / `CANCELLED`）的正文冻结：`PATCH /api/chapters/<id>`、回滚与重写均返回
+  `409 chapter_is_terminal` / `chapter_already_published`，保证发布后的文本不可再被静默改写。
 
 ## 幂等与失败
 

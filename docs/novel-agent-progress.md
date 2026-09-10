@@ -351,3 +351,53 @@ Windows 全量 `python -m unittest discover -s tests` = **Ran 150 tests, OK**；
   （3 项）；Windows 全量 **Ran 158 tests, OK**；`compileall`、`node --check`、
   `git diff --check` 通过。
 
+## 2026-09-10：生产级真实性审计（P0/P1 修复 + 服务端检索 + 持久化 E2E）
+
+审计方式：读取全部 `novel_agent/*`、`static/*`、`tests/*` 与文档；对 mock/fake/占位、
+假后端、持久化、外部集成、权限、状态机逐项核对；并用真实子进程做端到端验证。
+
+发现并修复（全部服务端落地，非仅前端隐藏）：
+
+1. **手动「重新审查」必然失败（P1）**：`POST /api/chapters/<id>/review` 把 `chapters` 行
+   （`goal`/`state_changes`/`foreshadowing_added`…）直接传入 `reviewer.review`，而审查器消费模型
+   输出契约（`chapterGoal`/`stateChanges`/…），于是每次都报伪造的 `missing_chapter_goal` 阻断项并把
+   章节置为 `FAILED`。由于手动编辑后必须重新审查才能导出，这等于**编辑→审查→批准→导出整条链路死锁**。
+   修复：新增 `reviewer.chapter_as_output()` 统一投影；顺带补上审查窗口的 `before` 过滤，避免把本章
+   自身正文判成 `recent_chapter_overlap`。
+2. **已发布正文可被静默改写（P1）**：`store.update_draft` 无终态校验，`PATCH /api/chapters/<id>`
+   能覆盖 `PUBLISHED_MANUALLY` 章节正文并把它降级为 `REVIEWING`（与 `_rollback_chapter` 明确声明的
+   「发布即不可回退」矛盾）。修复：终态章节冻结，返回 `409 chapter_is_terminal`。
+3. **批准缺少服务端门禁（P2）**：`approve` 只看 `blockingIssues`，未审查草稿（`review={}`）也能批准。
+   修复：要求 `review.passed=true`。
+4. **非法 `config` 留下孤儿任务（P2）**：`_sanitize_run_config` 原先在 `create_job` 之后执行，
+   400 时任务已入库且会被 worker 以默认参数启动。修复：先校验后建任务（generate/continue 两处）。
+5. **导出 I/O 失败无痕（P2）**：失败时 `export_jobs` 永远停在 `PENDING`、章节也不会标记失败、接口只抛
+   500。修复：新增 `store.fail_export_job`，返回稳定 `500/export_failed`（`ValueError` 映射为
+   `409 chapter_not_ready_for_export`），整本导出同样处理。
+6. **已导出章节被重新审查会掉状态（P2）**：`record_review` 无条件写 `WAITING_APPROVAL/FAILED`，
+   会把 `EXPORTED` 打回，破坏「先导出再人工发布」门禁。修复：终态/已导出状态不被降级。
+7. **N+1 与全表读（P2）**：`store.recent` 曾 `chapters()[−3:]`（把整本书含正文读入内存再切片，
+   每次生成都发生）；`chapters`/`published_chapters`/`novels` 均为 N+1。修复：单条有界 SQL +
+   抽出 `_hydrate_chapter` 统一 JSON 解码；`recent` 新增 `before` 参数。
+8. **索引未用（P2）**：`usage_series` 的 `substr(created_at,1,10) >= ?` 无法用索引；`events`
+   保留期清理按 `created_at` 全表扫描。修复：改 `created_at >= ?` 并新增 `idx_events_created`。
+9. **轮询把整本书下发给浏览器（P2）**：控制台每 1.5s 轮询全部章节（含正文），搜索是本地
+   `array.filter`。修复：列表投影 `?light=1`、仅取最近 `limit=500`、正文按需 `GET /api/chapters/<id>`，
+   并在超出窗口时自动走服务端 `?q=` 全库检索（SQLite `LIKE`，限 200 条）。
+10. **UI 字段错配（P2）**：阅读区「本章梗概」读 `chapterGoal`/`nextChapterHook`，持久化行只有
+    `goal`/`hook`，导致「目标 / 下章钩子」从未显示。修复：两种键都兼容。
+11. **死代码**：`demo.DEFAULT_PORT`、`events.latest_id`、`worker._process_one` 无引用，删除；
+    `models.TERMINAL`/`ACTIVE` 落地为取消任务与终态冻结的判定来源；`AgentContext.load_memory`
+    由 `stages.py` 复用，去掉两处重复的 JSON 解析；`deepseek`/`llm` 的 `prompt_version` 统一取自
+    `prompts.VERSION`（原先硬编码 `novel-writer@1`，会与写入 `usage` 的版本漂移）。
+
+验证：
+
+- 新增 `tests/test_review_flow.py`（22 例：契约投影、审查/批准/导出全链路、终态冻结、已导出不被降级、
+  非法 config 不建任务、轻量列表与服务端检索、导出 I/O 失败落 `FAILED`）。
+- 新增 `tests/test_e2e_persistence.py`（1 例）：真实 `python -m novel_agent.server` 子进程 + 真实 HTTP
+  （401/200 鉴权、建书、改 Bible 版本、幂等任务、取消、ops 指标/趋势/审计），**杀掉进程重启后**
+  验证小说、Bible 版本与内容、任务状态、审计全部仍在 —— 即刷新/重启不丢数据。
+- Windows 全量 **Ran 181 tests, OK**（退出码 0）；`compileall`、`node --check`、`git diff --check` 通过；
+  `python -m novel_agent.demo replay --quiet` 仍 `ok=true / WAITING_APPROVAL / 34 events`。
+

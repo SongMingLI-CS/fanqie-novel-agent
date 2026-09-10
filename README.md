@@ -92,6 +92,24 @@ make build
 
 已实现 `POST/GET /api/novels`、StoryBible 编辑、章节生成/列表、job 查询/取消、review、approve、导出、人工发布确认、pause/continue 和指定章节/连续 N 章任务创建；错误统一为 `{code,message,details}`。
 
+章节列表支持服务端投影与检索（避免把整本书下发给浏览器再本地过滤）：
+
+- `GET /api/novels/<id>/chapters` 返回全部章节（含正文）。
+- `GET /api/novels/<id>/chapters?light=1` 省略正文、改用 `content_length` 表示正文字数——
+  控制台轮询用这一档，正文按需用 `GET /api/chapters/<id>` 单独取回。
+- `?q=<关键词>` 由 SQLite 在服务端按「标题 / 章节号 / 状态 / 目标」检索整本小说。
+- `?limit=N`（≤5000）限制返回条数；不带 `q` 时返回**最近 N 章**（升序）。
+
+人工审查/发布的状态门禁全部在服务端执行（前端隐藏按钮只是附加保护）：
+
+- `POST /api/chapters/<id>/review` 会把数据库行（`goal`/`state_changes`…）投影成模型输出契约
+  （`chapterGoal`/`stateChanges`…）后再审查，并把**本章自身与后续章节**排除在「最近章节」窗口外，
+  因此不会把自己正文判成 `recent_chapter_overlap`。
+- `POST /api/chapters/<id>/approve` 仅在该章最近一次审查 `passed=true` 且无 `blockingIssues` 时通过（否则 409）。
+- 终态章节（`PUBLISHED_MANUALLY` / `CANCELLED`）的正文被冻结：`PATCH /api/chapters/<id>` 与
+  `POST /api/chapters/<id>/rollback` 返回 409 `chapter_is_terminal`，保证「发布即不可回退」的审计不变量。
+- 已导出章节再次审查不会被打回（保留 `EXPORTED`），否则会破坏「先导出再人工发布」的门禁。
+
 `POST /api/chapters/<id>/rewrite` 提供「删除并重写」：仅允许针对当前最新、尚未人工发布的草稿章，在一个事务中清除该章正文/审查/草稿历史及其任务和用量后，按 StoryBible 大纲重新排队生成同一章号（串联式覆盖重写，保证不与后续章节冲突）。
 
 `POST /api/novels/<id>/chapters/generate` 与 `POST /api/novels/<id>/continue` 遵循串行确认制：当「下一章」编号已存在一份已完成但尚未人工发布的草稿（待人工批准/已批准待导出/已导出）时，返回 `409 conflict / confirm_previous_chapter_first`（`details` 含 `chapterNumber`），提示先完成该章的「批准 → 导出 → 已人工发布」确认。这样避免把旧的成功任务误报为「正在队列中」而永不生成。
@@ -123,3 +141,31 @@ make build
   超过 400 章时只渲染最近 400 章（可用搜索定位更早章节）。
 - **任务/审计查询**：`GET /api/novels/<id>/jobs` 支持 `?status=&limit=`，
   `GET /api/ops/audit` 支持 `?action=&novel_id=` 过滤与分页。
+
+## 真实性与性能审计（2026-09-10）
+
+一轮针对「看起来能跑」与「真实可用」差距的审计，修复项：
+
+- **手动重新审查曾必然失败**：`POST /api/chapters/<id>/review` 过去把数据库行直接喂给
+  `reviewer.review`，而审查器读的是模型输出契约（`chapterGoal`/`stateChanges`…），于是每次都返回
+  伪造的 `missing_chapter_goal` 阻断项并把章节打成 `FAILED`，使「编辑正文 → 重新审查 → 批准 → 导出」
+  整条链路死锁。现在由 `reviewer.chapter_as_output()` 统一投影，并新增回归测试。
+- **已发布正文可被静默改写**：`PATCH /api/chapters/<id>` 此前没有终态校验，能覆盖 `PUBLISHED_MANUALLY`
+  章节的正文并把它降级成 `REVIEWING`（破坏审计不变量）。现在终态章节返回 409 `chapter_is_terminal`。
+- **批准缺少服务端门禁**：`approve` 过去只校验 `blockingIssues`，未审查的草稿也能批准；现在要求
+  `review.passed=true`。
+- **非法生成参数会留下孤儿任务**：`config` 校验现移到 `create_job` 之前，400 不再产生 PENDING 任务。
+- **导出失败不再"假装成功"**：I/O 失败会写入 `export_jobs.status='FAILED'` 并返回 500/`export_failed`，
+  不再把行留在 `PENDING` 且不置章节为 `EXPORTED`。
+- **查询与轮询成本**：`store.recent`（曾把整本书读进内存再切片）、`store.chapters`、`store.published_chapters`、
+  `store.novels` 全部改为单条有界 SQL；`usage_series` 改为可走索引的 `created_at >= ?`；
+  `events(created_at)` 新增索引（保留期清理不再全表扫描）。
+- **首屏/轮询体积**：章节列表默认走 `?light=1&limit=500`，正文按需取回；超过窗口时搜索自动切到服务端
+  `?q=` 全库检索（含分页上限），不再把整本小说下载到浏览器后 `array.filter`。
+- **UI 数据字段错配**：阅读区「本章梗概」读的是 `chapterGoal`/`nextChapterHook`，而持久化行为
+  `goal`/`hook`，导致「目标 / 下章钩子」从未显示；现已兼容两种键。
+- **状态机常量落地**：`models.ACTIVE`/`TERMINAL` 不再是无引用常量，分别用于取消任务与终态冻结判定。
+- **死代码清理**：移除未引用的 `demo.DEFAULT_PORT`、`events.latest_id`、`worker._process_one`；
+  `AgentContext.load_memory` 由 `stages.py` 复用（去掉两处重复的 JSON 解析）。
+- **新增测试**：`tests/test_review_flow.py`（审查/批准/导出/冻结/轻量列表/服务端检索，22 例）与
+  `tests/test_e2e_persistence.py`（真实子进程 + 重启后持久化验证，1 例）。
